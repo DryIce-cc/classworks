@@ -7,17 +7,20 @@
     content-class="homework-dialog-content"
     persistent
   >
-    <v-card border>
+    <v-card class="hw-card" border>
       <!-- 顶部倒计条：停手一会儿就自动关掉，防的是误触打开。
-           一直在，卡片顶边常驻；倒计还剩超过 COUNTDOWN_BAR_DELAY 时满格不动，
-           剩不到时才从满格往下走，走完正好赶上关闭。中途一动立刻收回满格 -->
-      <div v-if="countdownActive" class="close-countdown">
-        <div
-          class="close-countdown-bar"
-          :class="{ 'close-countdown-bar-drain': countdownBarDraining }"
-          :style="closeCountdownStyle"
-        />
-      </div>
+         一直在，卡片顶边常驻；倒计还剩超过 COUNTDOWN_BAR_DELAY 时满格不动，
+         剩不到时才从满格往下走，走完正好赶上关闭。中途一动立刻收回满格。
+         淡入淡出走通用那套（styles/transitions.scss 的 .fade-*） -->
+      <Transition name="fade">
+        <div v-if="countdownActive" class="close-countdown">
+          <div
+            class="close-countdown-bar"
+            :class="{ 'close-countdown-bar-drain': countdownBarDraining }"
+            :style="closeCountdownStyle"
+          />
+        </div>
+      </Transition>
 
       <v-card-title class="hw-title">
         {{ title }}
@@ -26,7 +29,7 @@
       <!-- 内容区。标题栏自带 8px 下内边距，这里再补 8px，标题到内容正好 16px，
            和左边的 16px 对齐 -->
       <v-card-text class="hw-panel">
-        <div class="d-flex">
+        <div ref="editorRow" class="d-flex">
           <div class="flex-grow-1">
             <!-- 日期小标题 + 切换日期的按钮；没有下限，一直能往前翻，只在已经离开今天时给「回到今天」 -->
             <div class="date-caption">
@@ -35,18 +38,20 @@
                    条件和「回到今天」那个按钮同源，都看当前这一天是不是今天 -->
               <span class="day-label" :class="canGoToday ? 'text-yellow' : 'text-medium-emphasis'">{{ dayName }}的作业</span>
               <v-spacer />
-              <v-btn
-                v-if="canGoToday"
-                size="small"
-                class="today-btn"
-                variant="text"
-                rounded="pill"
-                title="回到今天"
-                @mousedown.prevent
-                @click="goToday"
-              >
-                回到今天
-              </v-btn>
+              <!-- 只在已经离开今天时摆出来。淡入淡出走通用那套 -->
+              <Transition name="fade">
+                <v-btn
+                  v-if="canGoToday"
+                  size="small"
+                  class="today-btn"
+                  variant="text"
+                  rounded="pill"
+                  @mousedown.prevent
+                  @click="goToday"
+                >
+                  回到今天
+                </v-btn>
+              </Transition>
               <v-btn
                 icon="mdi-chevron-left"
                 size="small"
@@ -79,7 +84,6 @@
                 rounded="pill"
                 variant="text"
                 size="small"
-                title="下一天"
                 @mousedown.prevent
                 @click="shiftDate(1)"
               >
@@ -124,11 +128,12 @@
             <!-- 附加科目：点一下插入「#科目名：」小节，光标落在小节里的新行。
                  只在光标停在这天的空行上时摆出来：那是「要另起一小节」的地方，
                  停在别的行上插进去只会插在半句话中间。
-                 显隐用 visibility 切换，位置留着：面板高度不能跟着跳 -->
+                 显隐用 visibility 切换（配 .vis-fade 一起淡），位置留着：
+                 面板高度不能跟着跳 -->
             <div
               v-if="extraSubjects.length"
-              class="extra-subjects mt-4"
-              :class="{ 'extra-subjects-off': !showExtraSubjects }"
+              class="extra-subjects vis-fade mt-4"
+              :class="{ 'vis-fade-off': !showExtraSubjects }"
             >
               <div class="d-flex flex-wrap ga-2">
                 <v-chip
@@ -143,6 +148,8 @@
             </div>
           </div>
 
+          <!-- 小键盘：就在编辑框右栏里。横着贴住输入框右边、竖直跟这一栏居中，
+               全交给 flex 排（见 .quick-tools），不用算坐标也不会错位 -->
           <div class="quick-tools ml-4" style="min-width: 180px">
             <div class="numeric-keypad">
               <div class="keypad-row">
@@ -266,6 +273,7 @@
             </div>
           </div>
         </div>
+
         <!-- 推荐面板：在编辑框和小键盘那一整行的下面，横着铺满卡片，右边缘和小键盘对齐。
              固定高度（.phrase-panel 写死了），写字时编辑框不会上下跳 -->
         <div class="phrase-panel">
@@ -275,8 +283,12 @@
             class="phrase-row"
             :class="{ 'phrase-row-affix': row.prefix || row.suffix }"
           >
-            <!-- 「作为」「的作业」是固定文字，不是按钮 -->
-            <span v-if="row.prefix" class="phrase-affix phrase-affix-prefix">{{ row.prefix }}</span>
+            <!-- 「作为」「的作业」是固定文字，不是按钮。面板换层时这两个会时有时无，
+                 进场淡入（通用那套），离场不留恋：删掉 # 的那一下它们就该跟着没，
+                 慢慢淡出去的话这段时间字还在、行也还占着，看着比正文慢半拍 -->
+            <Transition name="fade" :duration="{ enter: 180, leave: 0 }">
+              <span v-if="row.prefix" class="phrase-affix phrase-affix-prefix">{{ row.prefix }}</span>
+            </Transition>
             <div class="phrase-chips">
               <div v-for="(group, gi) in row.groups" :key="gi" class="phrase-group">
                 <v-chip
@@ -291,12 +303,31 @@
                   {{ chipLabel(chip) }}
                 </v-chip>
               </div>
+              <!-- 「正面/反面」后头那个换行（见 panelRows 里的 newline）。
+                   词条是补字，这个是断句，用 flat + primary 跟它们分开；
+                   ma-1 和 chip 的间距对齐，height 也照 chip 的 32px，
+                   免得这一行比别行长出一截 -->
+              <v-btn
+                v-if="row.newline"
+                class="ma-1 phrase-newline"
+                color="primary"
+                rounded="pill"
+                size="small"
+                variant="flat"
+                @mousedown.prevent
+                @click="startNextItem"
+              >
+                下一行
+              </v-btn>
             </div>
-            <span v-if="row.suffix" class="phrase-affix phrase-affix-suffix">{{ row.suffix }}</span>
+            <Transition name="fade" :duration="{ enter: 180, leave: 0 }">
+              <span v-if="row.suffix" class="phrase-affix phrase-affix-suffix">{{ row.suffix }}</span>
+            </Transition>
           </div>
         </div>
       </v-card-text>
     </v-card>
+
   </v-dialog>
 </template>
 
@@ -354,7 +385,6 @@ const IDLE_CLOSE_RESET_DELAY = 15000
 const COUNTDOWN_BAR_DELAY = 7000
 // 倒计定时器醒来的间隔。够密，条出现那一刻的误差看不出来；够疏，白跑的轮询少
 const COUNTDOWN_TICK = 200
-// 正文末尾留几个空行，方便接着写下一条。面板从「继续添加作业」卡片进来时会抬到 2
 // （appendBlankLines），但那是「另起一份」的排版需求，只对正在编辑的那天成立
 const DEFAULT_BLANK_LINES = 1
 
@@ -483,11 +513,11 @@ export default {
       countdownBarDuration: 0
     }
   },
+
   created() {
     // 按下位置，不进响应式：只是用来判断这一下算不算「点击空白」
     this._press = null
     this._closeTimer = 0
-    // 这一轮倒计的截止时刻（Date.now() 口径），不同时钟口径的 Date.now 和
     // 定时器的单调时钟可能差几十毫秒，条走完和自动关闭就对不上了。
     // 非响应式：轮询自己算，不需要触发重渲染
     this._closeDeadline = 0
@@ -529,7 +559,7 @@ export default {
     // （正文、推荐面板的空白）焦点会掉回 body，这时卡片上的 @keydown 收不到按键
     document.addEventListener('keydown', this.handleKeydown, true)
     // 窗口缩放会改变编辑框宽度，高亮底层的几何要跟着重抄
-    window.addEventListener('resize', this.onHighlightResize)
+    window.addEventListener('resize', this.onWindowResize)
     // 字体后加载会改变换行位置，加载完重抄一份
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => this.syncHighlight())
@@ -546,7 +576,7 @@ export default {
     document.removeEventListener('selectionchange', this.onDocumentSelectionChange, true)
     document.removeEventListener('visibilitychange', this.handleVisibilityChange)
     document.removeEventListener('keydown', this.handleKeydown, true)
-    window.removeEventListener('resize', this.onHighlightResize)
+    window.removeEventListener('resize', this.onWindowResize)
     if (this._hlRaf) cancelAnimationFrame(this._hlRaf)
     this._hlRaf = 0
     if (this._hlTextarea) this._hlTextarea.removeEventListener('scroll', this.onHighlightScroll)
@@ -643,7 +673,7 @@ export default {
       return BOTTOM_KEYS
     },
     // 附加科目什么时候摆出来：只在光标停在这天的空行上、没有整块多选的时候。
-    // 不摆的时候靠 visibility 藏（见 extra-subjects-off），位置留着，面板高度不跟着变
+    // 不摆的时候靠 visibility 藏（配模板里的 .vis-fade 一起淡），位置留着，面板高度不跟着变
     showExtraSubjects() {
       return !this.selectedRange && this.currentLine.trim() === ''
     },
@@ -1035,7 +1065,7 @@ export default {
       this.scheduleHighlightSync()
     },
     // 窗口缩放：宽度变了换行位置全变，几何重抄（内容重画顺带发生）
-    onHighlightResize() {
+    onWindowResize() {
       if (!this.dialogVisible) return
       this._hlWidth = 0
       this.scheduleHighlightSync()
@@ -1687,6 +1717,18 @@ export default {
   margin-top: 14px;
 }
 
+/* 对话框比屏幕高的时候，卡片自己要滚（Vuetify 给卡片加的 overflow-y: auto）。
+   滚动条藏起来：它不占地方，编辑框的宽度就恒定 470，不会因为正文变长、
+   滚动条冒出来而突然窄一截、正文跟着重新折行。滚还是照样能滚（滚轮、触摸都行） */
+.hw-card {
+  scrollbar-width: none;
+}
+
+.hw-card::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 /* 内容区。标题栏自带 8px 下内边距，这里再补 8px，标题到内容正好 16px——
    和左边的 16px 对齐 */
 .hw-panel {
@@ -1773,12 +1815,6 @@ export default {
   gap: 8px;
 }
 
-/* 该藏的时候用 visibility，不拿掉：面板高度得是稳的，
-   正在写字的时候下面一整块跟着跳一下比少几个按钮难受多了 */
-.extra-subjects-off {
-  visibility: hidden;
-}
-
 /* 推荐面板：在编辑框和小键盘那一整行的下面，横着铺满卡片，右边缘和小键盘对齐。
    高度写死，编辑框就不会被面板顶得上下跳——三层词表轮着上，
    每一层有几行按钮还不一样，不写死的话打字时编辑框会跟着上下跳。
@@ -1827,6 +1863,18 @@ export default {
   flex: 0 0 auto;
 }
 
+/* 「正面/反面」后头那个换行按钮。词条是补字、这个是断句，所以配色上挑明：
+   primary + flat，一眼就看出不是往正文里加字的。
+   高度照词条那个 32px，这一行才跟别行一样高（词条是 32 + ma-1 的 4）；
+   字号也照词条——v-btn 按 size="small" 压到 0.75rem，比 chip 的 0.875rem 小一号，
+   并排摆着大小不齐。圆角走 rounded="pill"（9999px，两头圆），
+   别用 rounded="circle"：那个是 50%，长短不一的按钮上就成了椭圆 */
+.phrase-newline {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 0.875rem;
+}
+
 /* 「作为」「的作业」这类固定文字，不是按钮 */
 .phrase-affix {
   flex: 0 0 auto;
@@ -1860,15 +1908,21 @@ export default {
 }
 
 /* 键位之间的间距，横竖一律用这一个值：行与行靠 .numeric-keypad 的 gap，
-   一行之内靠各网格自己的 gap，两者都取它，不会一处宽一处窄 */
+   一行之内靠各网格自己的 gap，两者都取它，不会一处宽一处窄。
+   这一栏宽度由模板行内的 min-width 给 */
 .quick-tools {
   --key-gap: 4px;
   border-left: none;
   display: flex;
   flex-direction: column;
+  /* 键位在这一栏里竖直居中。栏被 flex 拉伸到跟编辑框一样高，
+     align-items: center 让键位落在栏的中线上——不用 fixed 也不用算坐标，
+     横向完全交给 flex 排，贴在编辑框右边，不会错位 */
+  align-items: center;
 }
 
 .numeric-keypad {
+  width: 180px;
   display: flex;
   flex-direction: column;
   gap: var(--key-gap);
@@ -1891,12 +1945,6 @@ export default {
    size="small" 本来就是 0.75rem，这里写死是免得改尺寸时跟着一起变 */
 .keypad-word {
   font-size: 0.75rem;
-}
-
-/* 这一格这次不给东西（比如刚敲完 p、接下来该敲数字）。
-   用 visibility 而不是 v-if，网格的位置要留着，不然 0 会往左边挪一格 */
-.key-blank {
-  visibility: hidden;
 }
 
 /* 量词那一排。五个键对不上三列，所以自己一行、均分整行，

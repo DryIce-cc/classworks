@@ -4,9 +4,12 @@
       <v-icon class="mr-2" icon="mdi-book-multiple" />
       <span class="text-h6">科目</span>
       <v-spacer />
-      <v-chip v-if="hasChanges" class="mr-2" color="warning" size="small" variant="elevated">
-        有未保存的更改
-      </v-chip>
+      <!-- 有没存过的改动。淡入淡出走通用那套（styles/transitions.scss 的 .fade-*） -->
+      <Transition name="fade">
+        <v-chip v-if="hasChanges" class="mr-2" color="warning" size="small" variant="elevated">
+          有未保存的更改
+        </v-chip>
+      </Transition>
       <v-btn
         :loading="loading"
         color="success"

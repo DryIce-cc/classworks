@@ -7,15 +7,17 @@
     <v-spacer />
 
     <template #append>
-      <v-btn
-        v-if="!isToday"
-        prepend-icon="mdi-calendar-today"
-        variant="tonal"
-        rounded="pill"
-        @click="goToday"
-      >
-        回到今天
-      </v-btn>
+      <!-- 只在离开今天时摆出来。淡入淡出走通用那套（styles/transitions.scss 的 .fade-*） -->
+      <Transition name="fade">
+        <v-btn
+          v-if="!isToday"
+          prepend-icon="mdi-calendar-today"
+          variant="tonal"
+          @click="goToday"
+        >
+          回到今天
+        </v-btn>
+      </Transition>
       <v-btn icon="mdi-chevron-left" variant="text" title="查看昨天" @click="navigateDay(-1)" />
       <v-btn
         icon="mdi-format-font-size-decrease"
@@ -127,6 +129,10 @@ export default {
     // 确认读到过存档的日期。删空记录前必须先在册——
     // 读失败时内存里的作业是空的，不确认就删会把没读出来的内容一起抹掉
     this.storedDates = new Set()
+    // 所看的这一天必须在第一次渲染之前就定下来。放在 mounted 里的话首屏先按空日期
+    // 渲染一遍（工具栏标题是空的，「回到今天」先摆出来再撤掉；URL 里带了日期的话
+    // 还会先淡入一下），看着像在加载。日期解析是纯计算，挪到这里没有副作用
+    this.resolveViewDate()
   },
 
   computed: {
@@ -254,7 +260,9 @@ export default {
       return formatDayName(dateString)
     },
 
-    async initializeData() {
+    // 定下「所看的这一天」：URL 上带了 date 就用它，否则今天。纯计算，
+    // created 里先跑一遍（首屏标题和「回到今天」都要它），initializeData 里再兜一次
+    resolveViewDate() {
       const urlParams = new URLSearchParams(window.location.search)
       const dateFromUrl = urlParams.get('date')
       const today = this.getToday()
@@ -272,6 +280,10 @@ export default {
       }
       this.state.dateString = this.formatDate(currentDate)
       this.state.selectedDateObj = currentDate
+    },
+
+    async initializeData() {
+      this.resolveViewDate()
       await Promise.all([this.loadDayData(), this.loadSubjects()])
     },
 

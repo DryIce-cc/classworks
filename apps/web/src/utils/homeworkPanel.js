@@ -35,7 +35,7 @@ const PAPERS = ['卷子', '练习卷', '周末卷']
 const BOOKS = ['小白', '作业册', '练习册', '课本']
 
 // 小键盘底下那排量词。刚敲完一个数字才需要它们，平时收起来（见 hints）
-export const BOTTOM_KEYS = ['题', '页', '张', '课', '章']
+export const BOTTOM_KEYS = ['题', '课', '章', '页', '张']
 
 // 自动建议最后一页的第一行
 const CONTENT_ROW = ['正面', '反面']
@@ -197,8 +197,10 @@ export function panelRows(line, today, scope, currentDate, selection) {
   // 最后一页不再分书/卷/默写——认得出是哪种反而让同一件事在不同行上长得不一样，
   // 按之前还得先想一遍这是哪一类
   return [
-    // 第一行永远是正反面：不管这一行是订正、默写还是写着「完成」，都还能接着补内容
-    { groups: [CONTENT_ROW] },
+    // 第一行永远是正反面：不管这一行是订正、默写还是写着「完成」，都还能接着补内容。
+    // newline 叫渲染层在「正面/反面」后头补一个换行按钮：写完一条另起一行是这个
+    // 面板上最常用的动作，摆在词条后头比只在小键盘里按那一下顺手
+    { groups: [CONTENT_ROW], newline: true },
     // 收尾建议要接在已有内容后面，所以带 comma 标记：按下时先补一个逗号再写词。
     // 用户自己已经打了逗号、或者已经在接着写这个词，就只补剩下的（见 insertWord）
     hasContent(line) ? { groups: [SUGGEST_WORDS], comma: true } : { groups: [] },

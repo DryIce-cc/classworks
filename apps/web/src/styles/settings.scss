@@ -33,8 +33,13 @@
     'typography': (responsive: false),
 
     // ---- 整个家族都不要 ----
-    // padding 系列模板里全靠自有 SCSS；rounded/elevation 走组件默认样式
+    // padding 系列模板里全靠自有 SCSS；rounded-top 那一族模板里没出现
     'float': false,
+    // 注意：rounded 这个家族不能关。它是 rounded="pill" / rounded="md" 这类
+    // prop 生成 .rounded-pill / .rounded-md 的地方，关了 prop 就只剩个类名悬着：
+    // 按钮退回 .v-btn 自带的 4px 圆角（hover 那层底色跟着变方角），
+    // 卡片退回 .v-card 的 4px。组件自带的 rounded（布尔那个）走 .v-btn--rounded，
+    // 跟这个 utility 家族是两回事，关这个不影响它
     'float:rtl': false,
     'float:ltr': false,
     'justify-items': false,
@@ -64,7 +69,7 @@
     'padding-left': false,
     'padding-start': false,
     'padding-end': false,
-    'rounded': false,
+    'rounded': (responsive: false),
     'rounded-top': false,
     'rounded-end': false,
     'rounded-bottom': false,

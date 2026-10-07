@@ -13,9 +13,12 @@
         <div class="text-subtitle-2 font-weight-medium">
           {{ message?.title }}
         </div>
-        <div v-if="message?.content" class="text-body-2">
-          {{ message?.content }}
-        </div>
+        <!-- 有就显示、淡入淡出走通用那套（styles/transitions.scss 的 .fade-*） -->
+        <Transition name="fade">
+          <div v-if="message?.content" class="text-body-2">
+            {{ message?.content }}
+          </div>
+        </Transition>
       </div>
     </div>
     <template #actions>
