@@ -48,7 +48,9 @@
     </template>
   </v-toolbar>
 
-  <div class="d-flex">
+  <!-- 这一段是纵向 flex（见 styles/index.scss 的 .board-body）：占满工具栏下面剩下的高度，
+       好让里面底部那排「添加作业」卡片在作业不满一屏时贴到视口底边 -->
+  <div class="d-flex board-body">
     <v-container class="main-window flex-grow-1 no-select bloom-container" fluid>
       <homework-grid
         :sorted-items="sortedItems"

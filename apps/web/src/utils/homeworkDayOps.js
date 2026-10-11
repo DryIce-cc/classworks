@@ -15,11 +15,19 @@ import {
   tidyBlankLines,
 } from './homeworkText'
 import {
+  parseHeadingLine,
   parseReserveLine,
   resolveReserveDay,
   retargetDayHeading,
   scopeTitle,
 } from './homeworkReserve'
+
+// 重新拼一个小标题时把原来那个的颜色代码带上。这一节原来是什么颜色，
+// 拼出来还是它——用户点一下改个日期，颜色跟着没了才是意外。
+// 没有颜色代码就是最普通的那个写法（# 后面不空一格）
+function headingWithColor(color, title) {
+  return color ? `#${color} ${title}` : `#${title}`
+}
 
 // 落在 [start, end) 这个范围里的那些 # 行，起始位置各是多少。
 // 只认整行都在范围里的 # 行——正文行不管，它自己不变，
@@ -137,7 +145,9 @@ export function stripLineToEnd(content, lineStart) {
   let rest = pruneDayHeading(content.slice(0, start) + content.slice(end), start)
   rest = tidyBlankLines(rest)
   // 新标题：有名字去日期，没名字不要标题
-  const heading = parsed.heading ? `#${parsed.heading}` : ''
+  const heading = parsed.heading
+    ? headingWithColor(parseHeadingLine(owner)?.color, parsed.heading)
+    : ''
   const body = rest.replace(/\n+$/, '')
   const head = body.trim() ? body + '\n\n' : ''
   // tidy 到这里只是在末尾补一个换行（前面已经没有连续空行也没有开头空行），
@@ -206,14 +216,16 @@ export function applyDayToSelection(content, start, end, word, strip) {
     // 作用域名：有标题的段用它自己那个标题（headingAbove 只会严格往上找，
     // 段自己的标题得单独取），光秃秃的段才去问上面那一节叫什么
     const title = block.headed ? scopeTitle(body[0]) : scopeTitle(scopeAbove || '')
+    // 颜色跟着作用域名走：这一节原来染过色，重新拼出来的标题还是那个色
+    const color = parseHeadingLine(block.headed ? body[0] : scopeAbove || '')?.color || ''
     // 尾部（同一段里选中之后剩下的那几行）没被选中，不该跟着这一段改。
     // 要给它自己一节的话，标题就用作用域名，不带日期——跟原来那节一个层级
-    const ownHead = title ? `#${title}` : ''
+    const ownHead = title ? headingWithColor(color, title) : ''
     // 段前就是一个小标题（段前不是标题行，或者压根没有段前）
     const skipHead = !block.headed && block.begin > 0 && isHeadingLine(lines[block.begin - 1])
     // 新起一节用的标题。光秃秃的段要点别的天就新起，标题也用作用域名，
     // 别一律叫「作业」
-    const sectionHead = ['', `#${word}的${title || '作业'}`]
+    const sectionHead = ['', headingWithColor(color, `${word}的${title || '作业'}`)]
     const prevHead = skipHead ? lines[block.begin - 1] : ''
 
     if (block.headed) {

@@ -7,7 +7,8 @@
 //   起手层  订正 / 卷（卷子、练习卷、周末卷）/ 本（小白、作业册、练习册、课本）
 //   自动建议的最后一层  只要这一行有汉字或字母就来，且不区分是卷是本还是默写：
 //           第一行正反面，第二行怎么收尾，第三行预定。固定四行，高度不变，
-//           写字时编辑框不会被顶得上下跳
+//           写字时编辑框不会被顶得上下跳。量词（题课章页张）不算汉字，
+//           见 pageLetters：敲完「1题」就该回起手层了
 //   小标题层  光标停在 # 开头那一行上，只有「作为…的作业」那一栏，
 //           点一下改的是这个标题的目标日期
 //
@@ -34,8 +35,12 @@ const RECITE = ['默写', '早读默写', '课前默写']
 const PAPERS = ['卷子', '练习卷', '周末卷']
 const BOOKS = ['小白', '作业册', '练习册', '课本']
 
-// 小键盘底下那排量词。刚敲完一个数字才需要它们，平时收起来（见 hints）
-export const BOTTOM_KEYS = ['题', '课', '章', '页', '张']
+// 小键盘底下那排量词（按使用频率排的）。刚敲完一个数字才需要它们，平时收起来（见 hints）
+export const BOTTOM_KEYS = ['张', '页', '题', '课', '章']
+
+// 决定「给哪一页建议」时，BOTTOM_KEYS 里那几个量词字不计入汉字（见 pageLetters）。
+// 直接由词表生成，量词增删了这里跟着变
+const MEASURE_CHARS = new RegExp(`[${BOTTOM_KEYS.join('')}]`, 'g')
 
 // 自动建议最后一页的第一行
 const CONTENT_ROW = ['正面', '反面']
@@ -52,10 +57,19 @@ function lettersOnly(line) {
   return line.replace(/[^\p{Script=Han}a-zA-Z]/gu, '')
 }
 
+// 判断该给哪一页建议时用的那一版：五个量词字（题课章页张）不算汉字。
+// 量词是「这一条写完了」的收尾，不是内容——敲完「1题」这一行就算交代完了，
+// 该回起手那一页接着写下一条；摘掉之后「1题」和光一个「1」是一回事，
+// 不然写完一条还得再删掉量词，面板才肯翻页
+function pageLetters(line) {
+  return lettersOnly(line).replace(MEASURE_CHARS, '')
+}
+
 // 除了「完成」这两个字，这一行没有别的中英文字了。
 // 这时面板回起手那一页：这一条齐了，接着写下一条（订正 / 卷 / 本）
-function onlyDone(line) {
-  return lettersOnly(line) === '完成'
+// 比的是量词摘干净之后那一版，所以「完成3题」和只写「完成」同样算齐了
+function onlyDone(letters) {
+  return letters === '完成'
 }
 
 // 小键盘上那两个格子，按光标前面停在哪动态换内容。空串表示这一次不给东西，
@@ -116,7 +130,9 @@ function recitePending(line) {
 }
 
 // 这一行有没有真内容：有汉字或者字母就算，标点、数字都不算。
-// 「小蓝p30~35」「完成小蓝」「mq」都算——词库认不认得先不管，有内容就能给建议
+// 「小蓝p30~35」「完成小蓝」「mq」都算——词库认不认得先不管，有内容就能给建议。
+// 量词在这一层仍算内容（所以「1题」能把换行那个键点亮）；只有决定翻不翻页时
+// 才把它们摘掉，见 pageLetters
 export function hasContent(line) {
   return lettersOnly(line) !== ''
 }
@@ -127,12 +143,14 @@ export function hasContent(line) {
 //   'hash'    小标题那一层：光标停在 # 标题行上，只有日期那一栏
 function phaseOf(line) {
   if (isHeadingLine(line)) return 'hash'
-  // 空行、只有标点的行：没什么可建议的
-  if (!hasContent(line)) return 'pick'
+  // 摘掉数字、标点和量词之后剩下的中英文字：空行、只有标点、只有数字量词的行
+  // 都是「这一条还没写内容」，没什么可建议的
+  const letters = pageLetters(line)
+  if (!letters) return 'pick'
   // 整行就写了「完成」：这一条齐了，回首页去接着写下一条。
   // 只写了完成、没写别的才这么办——「完成小白」「订正默写完成」都还在最后一页，
   // 那边的收尾建议和预定照旧给
-  if (onlyDone(line)) return 'pick'
+  if (onlyDone(letters)) return 'pick'
   // 「订正」刚落下、还没说是默写还是哪本，得留在起手那一层，
   // 不然默写那几个按钮就没处摆了
   if (recitePending(line)) return 'pick'

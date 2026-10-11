@@ -1,5 +1,7 @@
 <template>
-  <div>
+  <!-- 作业卡片区在上、底部那排「添加作业」在下。纵向 flex + 后者的 margin-top:auto，
+       作业不满一屏时后者就贴在视口底边（见 styles/index.scss 的 .empty-subjects） -->
+  <div class="grid-body">
     <!-- 作业卡片：按实测高度分列，三列各自独立纵向堆叠（无网格行、无行对齐）。
          首屏那版分列是按序号摆的（高度还没量到），所以先整块藏着，量完再淡入 -->
     <div ref="gridContainer" class="grid-masonry" :class="{ 'grid-pending': !measured }">
@@ -16,7 +18,7 @@
             border
             class="hw-card cursor-pointer"
             height="100%"
-            rounded="md"
+            rounded="xl"
             @click="$emit('open-dialog', item.key)"
           >
             <!-- 科目名独占一行，小标题按段落正常单独显示。
@@ -38,11 +40,15 @@
                 <template v-for="(block, bi) in day.blocks" :key="bi">
                   <v-divider v-if="di > 0 || bi > 0" class="hw-divider" />
                   <!-- 日期有、或者这段有自定义小标题，就出小标题：后面的日子光有正文也是要出
-                       「明天的作业」的，别因为没有自定义小标题就把它吞了 -->
+                       「明天的作业」的，别因为没有自定义小标题就把它吞了。
+                       日期那几个字刷黄（编辑框里也是黄的，两边看齐），标题名用小标题
+                       自带的颜色代码染 -->
                   <div v-if="day.date || block.custom" class="segment-label">
                     <span class="label-date">{{ day.date }}</span>
                     <span class="label-de">{{ day.date ? '的' : '' }}</span>
-                    <span class="label-name">{{ block.name }}</span>
+                    <span class="label-name" :style="block.colorStyle">
+                      <span v-if="block.day" class="label-date">{{ block.day }}</span>{{ block.title }}
+                    </span>
                   </div>
                   <div class="hw-paragraph">
                     <div v-for="(text, ti) in block.lines" :key="ti" class="hw-line">
@@ -58,8 +64,9 @@
     </div>
 
     <!-- 可添加作业的科目：尚无内容的直接开始填；启用了多份作业的科目即使已有内容，
-         也留一张「继续添加作业」卡片 -->
-    <div ref="emptySubjects" class="empty-subjects mt-4">
+         也留一张「继续添加作业」卡片。下边距留在上面那块（.grid-masonry），
+         这边的上外边距空出来给 margin-top:auto，见 styles/index.scss -->
+    <div ref="emptySubjects" class="empty-subjects">
       <div class="empty-subjects-grid">
         <!-- 这里不能加 tag：TransitionGroup 默认渲染成片段，卡片直接当 .empty-subjects-grid
              的子元素 participating 网格排布；套一层 div 就只剩一个子元素，会排成竖排 -->
@@ -72,7 +79,7 @@
             v-for="subject in addableSubjects"
             :key="subject.name"
             border
-            rounded="md"
+            rounded="xl"
             class="empty-subject-card"
             @click="openAddDialog(subject)"
           >
@@ -93,6 +100,8 @@
 </template>
 
 <script>
+import { parseHeadingLine } from '@/utils/homeworkReserve'
+
 // 窗口常年最大化，列数固定，不再按宽度分档
 const MAX_COLUMNS = 3
 // 「点击添加作业」卡片露在视野里又没人理，3s 后就把它上滑出去
@@ -445,11 +454,19 @@ export default {
     buildDays(item) {
       const days = []
       for (const segment of item.segments || []) {
-        const blocks = this.parseParagraphs(segment.content).map((para) => ({
-          custom: para.heading !== null,
-          name: para.heading !== null ? para.heading : '作业',
-          lines: para.lines,
-        }))
+        const blocks = this.parseParagraphs(segment.content).map((para) => {
+          // 没小标题的那一段就叫「作业」，没有颜色、没有自己的日期
+          const head = para.heading || { day: '', gap: '', title: '作业', color: '' }
+          return {
+            custom: para.heading !== null,
+            day: head.day,
+            title: head.gap + head.title,
+            // 颜色代码直接用作者写的那一串（#3FCC00 里不带 #），
+            // 没写就空着，模板那边不给 .label-name 绑颜色
+            colorStyle: head.color ? { color: `#${head.color}` } : null,
+            lines: para.lines,
+          }
+        })
         // 空的段（比如正文只剩空行）不占一块
         if (!blocks.length) continue
         days.push({
@@ -461,7 +478,8 @@ export default {
       return days
     },
 // 正文分段：空行断段，标题行永远另起一段（前面有没有空行都一样）。
-// 标题行剥掉行首缩进和 #、两头去空格，剩下的就是标题名；
+// 标题行剥掉行首缩进、# 和可选的颜色代码，剩下的按「日期几个字 / 标题名」切开——
+// 日期那块刷黄、标题名用那个颜色代码染（编辑框里的上色是同一份解析，见 parseHeadingLine）。
 // 它下面到空行或下一个标题行为止的正文都归它，没有正文也算一段，
 // 渲染成只有小标题的空段
     parseParagraphs(content) {
@@ -481,7 +499,12 @@ export default {
         }
         if (HEADING_LINE.test(raw)) {
           push()
-          current = { heading: raw.replace(/^[ \t]*#+/, '').trim(), lines: [] }
+          const head = parseHeadingLine(raw)
+          current = head
+            ? { heading: head, lines: [] }
+            // 不是标题行也要兜住（HEADING_LINE 和它按同一口径判定，
+            // 这里只是不把一条解析失败当成崩溃的理由）
+            : { heading: { day: '', gap: '', title: raw.replace(/^[ \t]*#+/, '').trim(), color: '' }, lines: [] }
           continue
         }
         if (!current) current = { heading: null, lines: [] }
@@ -497,6 +520,15 @@ export default {
 <style scoped>
 .cursor-pointer {
   cursor: pointer;
+}
+
+/* 这一列纵向排：上面的作业卡片按内容高，下面那排「添加作业」由 margin-top:auto
+   顶到最下面（styles/index.scss 里 .empty-subjects 的那条）。
+   不写 min-height:0：作业写满一屏时这一列要能被内容顶高，页面照常往下滚 */
+.grid-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
 }
 
 /* 科目名、小标题、正文三处之间的间距统一取这一个值 */
@@ -515,27 +547,34 @@ export default {
   padding: var(--hw-gap) 12px 12px;
 }
 
-/* 小标题：日期 + 自定义小标题（或「的作业」），各处外观一致 */
+/* 小标题：日期 + 自定义小标题（或「的作业」），各处外观一致。
+   压暗的那 0.6 只留给标题名（见 .label-name），日期那几个字要亮着刷黄 */
 .segment-label {
   display: flex;
   align-items: baseline;
   min-width: 0;
   font-size: 0.8em;
   line-height: 1.5;
-  opacity: 0.6;
   /* 小标题到正文的间距，与科目名到小标题一致 */
   margin-bottom: var(--hw-gap);
 }
 
-/* 日期和「的」不压缩，自定义小标题过长时单行省略 */
+/* 日期和「的」不压缩，自定义小标题过长时单行省略。
+   这一组连「的」一起刷黄——编辑框里 hl-date 盖的也是「明天的」这几个字，
+   两边看齐。黄得和那边一样（那边是 #FFEB3B） */
 .label-date,
 .label-de {
   flex: 0 0 auto;
   white-space: nowrap;
+  color: #ffeb3b;
 }
 
+/* 自定义小标题过长时单行省略。颜色由模板按小标题里写的颜色代码绑上来，
+   没写就靠这里的压暗和别的灰字拉开 */
 .label-name {
+  flex: 0 1 auto;
   min-width: 0;
+  opacity: 0.6;
   overflow: hidden;
   text-overflow: ellipsis;
   /* pre 才能保住小标题里多写的空格，同时保持单行 */

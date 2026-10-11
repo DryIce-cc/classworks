@@ -13,13 +13,40 @@ import { fileURLToPath, URL } from 'node:url'
 
 // 站点挂在 GitHub Pages 的子路径下（仓库名即路径），base 必须带上这一段，
 // 否则产物里的 /assets/... 会指到域名根，整站资源 404。
-// 下面 runtimeCaching 的匹配和 manifest 的 start_url/scope 都得跟着它走
-const BASE = '/Classworks/'
+// 路径大小写照 GitHub Pages 上实际能访问到的那个写，别自己改成大写：
+// 仓库名改了，这里、下面 runtimeCaching 里写死的那几处字面量、
+// 以及 manifest 的 start_url/scope 都得跟着改
+const BASE = '/classworks/'
+
+// 开发服务器上把少一个结尾斜杠的 /classworks 领到 /classworks/ 去。
+// base 写的是带斜杠那一份，Vite 认的也只有带斜杠的写法，所以直接敲
+// http://localhost:3031/classworks 既不匹配也不重定向，只能吃一个 404。
+// （生产那边是 GitHub Pages 按目录给补这个斜杠，所以只有开发时会撞上；
+//  别改成「开发时 base 改成 /」来躲——那样开发环境和线上就不是同一个路径了）
+function redirectBaseSlash() {
+  const bare = BASE.slice(0, -1)
+  return {
+    name: 'redirect-base-slash',
+    // configureServer 里注册的中间件排在 Vite 自带的那一堆之前，
+    // 所以拦在它前头，不用管它认不认这个路径
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url === bare) {
+          res.writeHead(302, { Location: BASE })
+          res.end()
+          return
+        }
+        next()
+      })
+    },
+  }
+}
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => ({
   base: BASE,
   plugins: [
+    redirectBaseSlash(),
     VueRouter(),
     Layouts(),
     Vue({
@@ -56,8 +83,8 @@ export default defineConfig(({ command }) => ({
             // 在那边不存在，${BASE} 会留成字面量、这条规则永远匹配不上。
             // 所以只能写死字面量，改 BASE 时记得连这里一起改
             urlPattern: ({ url, sameOrigin }) => {
-              // 站点在子路径下，资源实际在 /Classworks/assets/... 而不是 /assets/...
-              return sameOrigin && url.pathname.startsWith('/Classworks/assets/')
+              // 站点在子路径下，资源实际在 /classworks/assets/... 而不是 /assets/...
+              return sameOrigin && url.pathname.startsWith('/classworks/assets/')
             },
             handler: 'CacheFirst',
             options: {
@@ -73,7 +100,7 @@ export default defineConfig(({ command }) => ({
           },
           {
             urlPattern: ({ url, sameOrigin }) => {
-              return sameOrigin && url.pathname.startsWith('/Classworks/pwa/')
+              return sameOrigin && url.pathname.startsWith('/classworks/pwa/')
             },
             handler: 'StaleWhileRevalidate',
             options: {
@@ -94,8 +121,8 @@ export default defineConfig(({ command }) => ({
               const path = url.pathname
               // 排除已经由其他规则处理的路径
               return !(
-                path.includes('/Classworks/assets/') ||
-                path.includes('/Classworks/pwa/')
+                path.includes('/classworks/assets/') ||
+                path.includes('/classworks/pwa/')
               )
             },
             handler: 'NetworkFirst',
@@ -136,6 +163,9 @@ export default defineConfig(({ command }) => ({
           client_mode: 'navigate-existing',
         },
         // file_handlers / protocol_handlers 已删：声明了但代码零实现（无 launchQueue），先不挂
+        // shortcuts 也删了：装成应用后它会变成系统菜单/任务栏跳转列表里的一条
+        // （Windows 上叫「任务 - 设置」），这个应用本来就在一块屏上开着，
+        // 多给一个进设置的入口反而像是另一个页面
         icons: [
           {
             src: './pwa/image/pwa-64x64.png',
@@ -157,20 +187,6 @@ export default defineConfig(({ command }) => ({
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',
-          },
-        ],
-        shortcuts: [
-          {
-            name: '设置',
-            short_name: '设置',
-            url: `${BASE}settings`,
-            icons: [
-              {
-                src: './pwa/image/pwa-64x64.png',
-                sizes: '64x64',
-                type: 'image/png',
-              },
-            ],
           },
         ],
       },
