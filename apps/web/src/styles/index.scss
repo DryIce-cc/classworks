@@ -95,7 +95,8 @@ html:not(.hw-hover-idle) .grid-item .v-card:hover {
   opacity: 0.8;
 }
 
-// 空科目卡片：鼠标静止三秒后悬停收掉（做法见上面 .grid-item 那段的注释）
+// 空科目卡片：鼠标静止一秒后悬停收掉（时长在 App.vue 的 IDLE_HOVER_MS，
+// 做法见上面 .grid-item 那段的注释）
 html:not(.hw-hover-idle) .empty-subject-card:not(:disabled):hover {
   opacity: 1;
   transform: scale(1.02);

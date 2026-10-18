@@ -14,8 +14,8 @@ import { onBeforeUnmount, onMounted } from 'vue'
 
 // 深色主题只在 plugins/vuetify.js 里定（defaultTheme: 'dark'），这里不再重复强制
 
-// 鼠标静止多久之后收掉悬停效果（两秒：展示时鼠标往往一动不动，三秒太久，卡片一直亮着）
-const IDLE_HOVER_MS = 2000
+// 鼠标静止多久之后收掉悬停效果（一秒：展示时鼠标往往一动不动，待得久了卡片一直亮着）
+const IDLE_HOVER_MS = 1000
 // 收掉之后挂在这个类名上。真正的「退回非悬停」写在 styles/index.scss 里
 // （见那段注释）：JS 这边只管加类、去类
 const IDLE_CLASS = 'hw-hover-idle'
@@ -48,7 +48,7 @@ function onContextMenu(event) {
 // 配一份同值的非悬停覆盖）。鼠标一动就把类去掉，悬停当场回来。
 //
 // 两处特意不做：
-//   按住不放的时候不开始计时——不然按着按钮不动三秒，按下的效果会被收掉
+//   按住不放的时候不开始计时——不然按着按钮不动一秒，按下的效果会被收掉
 //   触屏不启用——那边本来没有 hover
 let idleTimer = 0
 let pointerDown = false

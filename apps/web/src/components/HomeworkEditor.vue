@@ -15,9 +15,10 @@ import {
   StateEffect,
   StateField,
 } from '@codemirror/state'
-import { Decoration, EditorView, GutterMarker, ViewPlugin, gutter, keymap } from '@codemirror/view'
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { ghostNumber, joinContent, nextNumber, renumberAll, splitContent } from '@/utils/homeworkList'
+import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, gutter, keymap } from '@codemirror/view'
+import { defaultKeymap, deleteCharBackward, history, historyKeymap } from '@codemirror/commands'
+import { ghostNumber, joinContent, nextNumber, renumberAll, splitContent, stripBareNumbers } from '@/utils/homeworkList'
+import { smartPaste } from '@/utils/homeworkPaste'
 import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
 import { HEADING_PREFIX, parseHeadingLine } from '@/utils/homeworkReserve'
 
@@ -32,8 +33,6 @@ const emit = defineEmits(['update:modelValue', 'selection-change'])
 
 // 存储口径的行首编号：数字 + 句点，点后面必须紧跟一个空格或者就是行尾
 const STORED = /^(\d+)\.(?=[ 　]|$)/
-// 正文里能刷黄的日子词（和 homeworkReserve 的 DAY_PATTERN 同一份）
-const DAY_WORD = /(今天|明天|后天|下?周[日一二三四五六])/g
 
 // 「1. 」这一截占几个字（含紧跟的那一个空格，只认一个）。不是编号行返回 0
 function numberLen(text) {
@@ -89,6 +88,32 @@ function settle(oldDoc, newDoc, anchor) {
   const map = splitContent(normalizeTypedNumbers(newDoc))
   const texts = map.texts.slice()
   const numbers = map.numbers.slice()
+  // 这一轮由「手敲 N.」认出来的行。下面「正文被删空就摘号」那一条要绕开它们：
+  // 那些行的正文是被认成编号后才空的，不是用户把正文删掉了（见下面）
+  const typed = new Set()
+  for (let i = 0; i < texts.length; i++) {
+    const found = /^(\d+)\.(?!\d)/.exec(texts[i])
+    if (!found) continue
+    const n = Number(found[1])
+    if (!n) continue
+    const rest = texts[i].slice(found[0].length)
+    texts[i] = /^[ 　]/.test(rest) ? rest.slice(1) : rest
+    numbers[i] = n
+    typed.add(i)
+  }
+  // 正文被删空的行，把号也一起摘掉——但这轮只是「手敲 N. 号还没写正文」的话要留着：
+  // 判断看旧文中同一行：旧文里就有这个号、旧文有字，说明号是旧行员，这轮删空正文 → 摘号；
+  // 旧文没号或旧文行就是空的，说明号是这轮敲进来的 → 留着等正文。
+  // 这一轮刚认出来的手敲号（typed）也要留着：它是用户主动写下的第几号，
+  // 正文空着正是「还没写」，不该被当成「删空了」
+  const oldMap = splitContent(oldDoc)
+  for (let i = 0; i < texts.length; i++) {
+    if (typed.has(i)) continue
+    if (numbers[i] > 0 && !texts[i].trim()) {
+      const oldBody = i < oldMap.texts.length ? oldMap.texts[i] : ''
+      if (oldMap.numbers[i] === numbers[i] && oldBody.trim() !== '') numbers[i] = 0
+    }
+  }
   const index = anchor.index
   if (
     index >= 0 &&
@@ -100,8 +125,17 @@ function settle(oldDoc, newDoc, anchor) {
   ) {
     numbers[index] = nextNumber(texts, numbers, index)
   }
+  // 手敲「N.」还没写正文的空行：把号对齐到这一行的顺序位置上。有正文的行
+  // 归 renumberAll 收拾，它照规则跳过空行；空行挂着的号就一直停在用户敲的
+  // 那个数上，编号栏上连虚拟序号也跟着错。行的顺序就是号，敲错了纠正过来
+  for (let i = 0; i < texts.length; i++) {
+    if (numbers[i] > 0 && !texts[i].trim()) {
+      numbers[i] = nextNumber(texts, numbers, i)
+    }
+  }
   renumberAll(texts, numbers)
-  return joinContent(texts, numbers)
+  const target = joinContent(texts, numbers)
+  return target
 }
 
 // 两份正文逐行的最小差异。收尾只改行首那几个记号，行数不会变，所以逐行对得上。
@@ -185,7 +219,17 @@ function toggleRefuse(view, pos) {
 
 // ===== 藏起记号、给日子词和标题名上色 =====
 
-const HIDE = Decoration.replace({})
+class HideWidget extends WidgetType {
+  toDOM() {
+    const el = document.createElement('span')
+    el.className = 'hwe-hide'
+    el.setAttribute('aria-hidden', 'true')
+    el.contentEditable = 'false'
+    return el
+  }
+  ignoreEvent() { return true }
+}
+const HIDE = Decoration.replace({ widget: new HideWidget() })
 const DAY_MARK = Decoration.mark({ class: 'hwe-date' })
 const HEAD_MARK = Decoration.mark({ class: 'hwe-head' })
 
@@ -211,10 +255,7 @@ function buildDecorations(state) {
       if (restStart < line.to) marks.push(HEAD_MARK.range(restStart, line.to))
       continue
     }
-    // 普通正文里的日子词也刷黄
-    for (const found of text.matchAll(DAY_WORD)) {
-      marks.push(DAY_MARK.range(line.from + found.index, line.from + found.index + found[0].length))
-    }
+    // 普通正文里的日子词不刷黄：黄色只标 # 行开头起功能作用的日子词
   }
   return { hides, decorations: Decoration.set([...hides, ...marks], true) }
 }
@@ -310,13 +351,6 @@ function dropHeadingAt(view, index) {
   view.dispatch({ changes: { from: line.from, to: line.from + len } })
 }
 
-function dropNumberAt(view, index) {
-  const line = view.state.doc.line(index + 1)
-  const len = numberLen(line.text)
-  if (!len) return
-  view.dispatch({ changes: { from: line.from, to: line.from + len } })
-}
-
 // 把这一行的 # 状态翻过来：是标题就去掉 #，不是就补一个 #（补之前先把编号摘掉，
 // 小标题不是一条作业）。点左边那一格、行首按 # 都走这里
 function toggleHeadingAt(view, index) {
@@ -327,7 +361,15 @@ function toggleHeadingAt(view, index) {
     return
   }
   const num = numberLen(line.text)
-  view.dispatch({ changes: { from: line.from, to: line.from + num, insert: '#' } })
+  const from = line.from
+  view.dispatch({
+    changes: { from, to: from + num, insert: '#' },
+    // 光标明确落到 # 后面。这一下不给选区的话，CM 会把原来那个光标按
+    // 「贴着前一个字符」映射过去——光标就留在 # 前面了，接着打的字全插到
+    // # 前面去：# 从此不再是行首记号，这一行也就不再是小标题（还会顺手
+    // 被当成一条新作业补上编号）
+    selection: EditorSelection.cursor(from + num + 1),
+  })
 }
 
 // 切换这一行的编号，等价于点编号栏上那一格 / 行首按空格：
@@ -363,8 +405,14 @@ function toggleLineAt(view, index) {
     view.dispatch({ changes: { from: line.from, to: line.from + num } })
     return
   }
+  const add = `${nextNumber(map.texts, map.numbers, index)}. `
+  // 光标正好压在行首（点的是左边那一格，人就在这一行）时，插进去的号会被光标挡住，
+  // 得明确把它推到号后面；光标在正文中就别动，CM 自己映射得对
+  const sel = state.selection.main
+  const atHead = sel.empty && sel.head === line.from
   view.dispatch({
-    changes: { from: line.from, insert: `${nextNumber(map.texts, map.numbers, index)}. ` },
+    changes: { from: line.from, insert: add },
+    selection: atHead ? EditorSelection.cursor(line.from + add.length) : undefined,
   })
 }
 
@@ -383,9 +431,9 @@ function lineHeadIndex(view) {
   return -1
 }
 
-// 回车。行首回车 = 在它上面插一个空行，这一行连记号原样留在下面（这就是「分段」）；
-// 别处回车 = 把这一行劈成两半。新行不挂号：空行不算一条作业，编号栏上摆的是
-// 「写上字就是第几号」的虚拟序号，真敲上字才把上一行的号接上来。
+// 回车。行首回车 = 在这一行上面插一个空行（这就是「分段」）；别处回车 = 把这一行
+// 劈成两半。新行不挂号：空行不算一条作业，编号栏上摆的是「写上字就是第几号」的
+// 虚拟序号，真敲上字才把上一行的号接上来。
 // 劈出来的下半截不是新的一条，标成「不要编号」，敲上字也不补
 function enterAt(view) {
   const sel = view.state.selection.main
@@ -394,58 +442,108 @@ function enterAt(view) {
     return true
   }
   const line = view.state.doc.lineAt(sel.head)
-  if (sel.head <= line.from + markerLen(line.text)) {
+  const mlen = markerLen(line.text)
+  if (sel.head <= line.from + mlen) {
+    // 光标跟着原来这一行走，落到它挪下去之后的新行首（这一行一个字没动，
+    // 记号照旧挡在前面，所以落点要加上记号那一截）。
+    // 别落在插出来的空行上：空行正好占着这一格原来的位置，光标停在那儿
+    // 看着就是「按了回车光标没动」，人还在这一行上、格子却掉到下面去了。
+    // 「分段」本来就是「在上一行和这一行之间插一段空白」，这一行才是你正在写的
     view.dispatch({
       changes: { from: line.from, insert: '\n' },
-      selection: EditorSelection.cursor(line.from + 1),
+      selection: EditorSelection.cursor(line.from + 1 + mlen),
     })
     return true
   }
   const tail = line.text.slice(sel.head - line.from)
+  const map = docMap(view.state)
+  const num = nextNumber(map.texts, map.numbers, line.number - 1)
+  const prefix = `${num}. `
   view.dispatch({
-    changes: { from: sel.head, insert: '\n' },
-    selection: EditorSelection.cursor(sel.head + 1),
-    effects: tail ? setRefuse.of({ pos: sel.head + 1, on: true }) : undefined,
+    changes: { from: sel.head, insert: '\n' + prefix },
+    selection: EditorSelection.cursor(sel.head + 1 + prefix.length),
   })
   return true
 }
 
-// 删除键 / 退格在行首。标题行去掉 #；全文最开头把这一行的记号摘掉。
-// 别的地方不插手——用户在那儿是要删字、删换行符，交给原生
+// 退格在行首。这把键只额外认一件事：摘掉小标题行首的 #。
+// 它不摘编号——用户按退格是想删东西，不是想改这一行要不要编号，
+// 想要没编号的正文去点左栏那一格、或按空格（见 toggleLineAt）。
+// 别的地方不插手，交给原生
 function deleteAt(view, forward) {
   const sel = view.state.selection.main
   if (!sel.empty) return false
   const line = view.state.doc.lineAt(sel.head)
   const text = docMap(view.state).texts[line.number - 1] ?? line.text
-  // 标题行：行首删掉 #
-  if (isHeadingLine(text) && sel.head <= line.from + headingLen(line.text)) {
+  // 标题行：只允许退格摘掉 #；删除键一律不摘 #
+  if (isHeadingLine(text) && !forward && sel.head <= line.from + headingLen(line.text)) {
     dropHeadingAt(view, line.number - 1)
     return true
   }
+  if (isHeadingLine(text) && forward && sel.head < line.from + headingLen(line.text)) {
+    view.dispatch({ selection: EditorSelection.cursor(line.from + headingLen(line.text)) })
+    return true
+  }
   const mlen = markerLen(line.text)
-  // 光标落在记号前面：先挪到记号后面，避免原生把整块记号删掉
+  // 光标落在记号里面：挪到记号后面，绝不删记号本身
   if (sel.head < line.from + mlen) {
     view.dispatch({ selection: EditorSelection.cursor(line.from + mlen) })
-    return false
+    return true
   }
-  // 全文最开头：删除键前面本来就没有字，正好拿它把这一行的记号摘掉
+  // 首行行首按退格：吃掉这一下。
+  // 那前面就是记号本身。记号是零宽的、又是一段原子区（见 EditorView.atomicRanges），
+  // 交给原生的话它会一步跨过整块原子区，退格把「1. 」连号带空格整个删掉——
+  // 行号就此消失，编号栏跟着掉成暗点。正文是空的才走「明说这一行不要编号」。
+  // 用户真要这个行不要编号，去点左栏那一格
+  if (!forward && line.number === 1 && sel.head === line.from + mlen) {
+    if (!text.trim() && !isRefused(view.state, line.from)) {
+      toggleRefuse(view, line.from)
+    }
+    return true
+  }
+  // 全文最开头：正文是空的，「这一行不要编号」用一次；其余没有可删的，原生自己会什么都不做
   if (sel.head === 0) {
-    if (!text.trim()) {
-      if (!isRefused(view.state, line.from)) toggleRefuse(view, line.from)
-      return true
-    }
-    if (numberLen(line.text) > 0) {
-      dropNumberAt(view, 0)
+    if (!text.trim() && !isRefused(view.state, line.from)) {
+      toggleRefuse(view, line.from)
       return true
     }
     return false
   }
-  // 退格在行首（非全文开头）：删掉前面的换行符，把这一行并到上一行后面
+  // 退格在行首（非全文开头）：删掉前面的换行符和这一行的记号，把正文并到上一行后面
   if (!forward && sel.head === line.from + mlen && line.number > 1) {
-    view.dispatch({ changes: { from: line.from - 1, to: line.from } })
+    const marker = markerLen(line.text)
+    view.dispatch({ changes: { from: line.from - 1, to: line.from + marker } })
+    return true
+  }
+  // 行末按删除键：删掉换行符，把下一行并上来，但把下一行的编号/记号摘掉，只留正文
+  if (forward && sel.head === line.to && line.number < view.state.doc.lines) {
+    const nextLine = view.state.doc.line(line.number + 1)
+    const nextMarker = markerLen(nextLine.text)
+    view.dispatch({ changes: { from: sel.head, to: sel.head + 1 + nextMarker } })
     return true
   }
   return false
+}
+
+// ===== 复制 / 剪切 =====
+
+// 复制/剪切出去的正文里，把「一整行只有一个光杆编号」的空行还原成空行。
+// 界面上那种空行只显示编号栏上的虚拟序号，正文里其实没有号，粘出去却带着，
+// 用户不会知道那是哪来的（见 stripBareNumbers）。
+// 原生复制走的是 DOM 选区，隐藏记号本来就不在里面，可空行自己那个号是在里面的
+function clipboardFromSelection(event, view, cutting) {
+  const sel = view.state.selection.main
+  const text = view.state.doc.sliceString(sel.from, sel.to)
+  const fixed = stripBareNumbers(text)
+  if (fixed === text) return false
+  event.clipboardData?.setData('text/plain', fixed)
+  event.preventDefault()
+  // 剪切的第二半得自己补上。原生剪切的默认行为被上面掐掉了，不补的话
+  // 选区还留在那儿，看着像只复制没剪切
+  if (cutting && !sel.empty && !view.state.readOnly) {
+    view.dispatch(view.state.replaceSelection(''))
+  }
+  return true
 }
 
 // ===== 光标、模型值的同步 =====
@@ -461,36 +559,112 @@ function selectionPayload() {
   return { anchor: main.anchor, head: main.head, from: main.from, to: main.to, empty: main.empty }
 }
 
-function settleInView(update) {
-  const oldDoc = update.startState.doc.toString()
-  const newDoc = update.state.doc.toString()
-  const sel = update.state.selection.main
-  const back = update.changes.invert(update.startState.doc)
-  const oldPos = back.mapPos(sel.head, -1)
-  const oldLine = update.startState.doc.lineAt(oldPos)
-  const wasBlank = bodyOf(oldLine.text).trim() === ''
-  const line = update.state.doc.lineAt(sel.head)
-  const refused = update.state.field(refusedField).has(line.from)
-  const target = settle(oldDoc, newDoc, { index: line.number - 1, wasBlank, refused })
-  if (target === newDoc) return
-  const changes = diffLines(newDoc, target)
-  if (!changes) {
-    view.dispatch({ changes: { from: 0, to: newDoc.length, insert: target } })
+// 收尾的后半段：按 oldDoc/newDoc 算出该收成什么样，不一样就派发回编辑器。
+// anchor.index 和 refused 都拿 view.state 现算——组字那条路没有现成的 update 可用，
+// 只有这两样在两路口径里含义一致
+function applySettled(oldDoc, newDoc, wasBlank) {
+  const selection = view.state.selection
+  const sel = selection.main
+  const line = view.state.doc.lineAt(sel.head)
+  const anchor = {
+    index: line.number - 1,
+    wasBlank,
+    refused: view.state.field(refusedField).has(line.from),
+  }
+  const target = settle(oldDoc, newDoc, anchor)
+  // 用户手敲「N.」明摆着是要序号：这一行之前点过「不要编号」的话，把拒绝记号撤掉，
+  // 编号栏才会跟着摆出真号。target===newDoc 时也可能需要撤（号本来就在，正文没变）
+  const tmap = splitContent(target)
+  const effect = anchor.refused && tmap.numbers[anchor.index] > 0
+    ? setRefuse.of({ pos: line.from, on: false })
+    : undefined
+  if (target === newDoc) {
+    if (effect) {
+      view.dispatch({ effects: effect, annotations: fromOutside.of(true) })
+    }
     return
   }
-  const ranges = sel.ranges.map((range) => {
-    const anchor = mapCursor(range.anchor, changes)
+  const changes = diffLines(newDoc, target)
+  if (!changes) {
+    view.dispatch({ changes: { from: 0, to: newDoc.length, insert: target }, annotations: fromOutside.of(true), effects: effect })
+    return
+  }
+  const ranges = selection.ranges.map((range) => {
+    const shifted = mapCursor(range.anchor, changes)
     const head = mapCursor(range.head, changes)
-    return EditorSelection.range(anchor, head)
+    return EditorSelection.range(shifted, head)
   })
   view.dispatch({
     changes,
     selection: EditorSelection.create(ranges, sel.mainIndex),
+    annotations: fromOutside.of(true),
+    effects: effect,
   })
 }
 
+function settleInView(update) {
+  const oldDoc = update.startState.doc.toString()
+  const newDoc = update.state.doc.toString()
+  const back = update.changes.invert(update.startState.doc)
+  const oldPos = back.mapPos(update.state.selection.main.head, -1)
+  const oldLine = update.startState.doc.lineAt(oldPos)
+  // wasBlank 问的是「改动之前那一行是空的」，而 anchor.index 问的是「改动之后光标
+  // 所在的那一行」。敲一个字时这两行是同一行；一次贴进来好几行时不是——光标停在
+  // 整段的最后一行，oldPos 却落在整段的起点（插入的内容整体映射回原处），拿起点那行
+  // 的「空」去给终点那行补号，贴进来的最后一行就会莫名多出一个号，而原文里它本来没有
+  // （多半是说明、备注，不是作业）。粘贴那一路自己声明不补号，见 pasteText
+  const pasted = update.transactions.some((tr) => tr.annotation(pastedFromClipboard))
+  applySettled(oldDoc, newDoc, !pasted && bodyOf(oldLine.text).trim() === '')
+}
+
+// 无论如何，不让光标/选区端点停在隐藏记号里：
+// 空选区（单光标）被夹到正文起点；非空选区只把恰好落进记号内部的一端捋到边缘，
+// 选区可以盖住记号（全选复制要带上 # / 序号），但不能「半截进记号」
+const clampSelectionToBody = EditorState.transactionFilter.of((tr) => {
+  if (!tr.selection) return tr
+  const selection = tr.selection
+  const doc = tr.state.doc
+  const clampBodyStart = (pos) => {
+    const line = doc.lineAt(pos)
+    // 空选区（单光标）一律夹到正文起点，也就是记号后面那一格。
+    // 行首（记号之前）不给停：记号是零宽的，屏幕上看着就在那儿，可它其实占着
+    // 真实的字符位置。光标停在那儿有两个后果——原生退格会把整块记号当一个
+    // 原子区跨过去，连号带空格一起删掉；中文输入法起手那一拍多半把首字锚在
+    // 这儿，收尾再把这段正文搬回记号后面就会和输入法的组字打架（首字重复）。
+    // 这一行没有记号时正文起点就是行首，空行照样能停
+    const start = line.from + markerLen(line.text)
+    return pos < start ? start : pos
+  }
+  const clampInside = (pos) => {
+    const line = doc.lineAt(pos)
+    const from = line.from
+    const to = line.from + markerLen(line.text)
+    return pos > from && pos < to ? to : pos
+  }
+  const newRanges = selection.ranges.map((range) => {
+    if (range.empty) {
+      const pos = clampBodyStart(range.anchor)
+      return pos !== range.anchor ? EditorSelection.cursor(pos) : range
+    }
+    const anchor = clampInside(range.anchor)
+    const head = clampInside(range.head)
+    return anchor !== range.anchor || head !== range.head
+      ? EditorSelection.range(anchor, head)
+      : range
+  })
+  return {
+    changes: tr.changes,
+    selection: EditorSelection.create(newRanges, selection.mainIndex),
+    annotations: tr.annotations,
+    effects: tr.effects,
+  }
+})
+
 function handleUpdate(update) {
-  // 中文输入法组字中不插手：CM 已经把组字期间的按键拦下来了，这里只防万一
+  // 每一笔改动都收尾。组字中的拼音也走这一条：输入法只是把一次输入拆成了
+  // 好几笔事务，没有哪一笔特殊。以前这里为组字单开过旁路（组字期间不收尾、
+  // 不搬字、虚拟序号另算一条），拼音期间光标因此会落到隐藏记号前面、序号会抖，
+  // 一律撤掉——拼音和普通字走完全同一条路
   if (update.docChanged && !update.transactions.some((tr) => tr.annotation(fromOutside))) {
     settleInView(update)
   }
@@ -502,7 +676,9 @@ function handleUpdate(update) {
   if (update.selectionSet) emit('selection-change', selectionPayload())
 }
 
-// 把光标停在行首那个记号前头 / 里头敲的字挪到记号后面，正文才落在正文该在的地方
+// 改「笔插在哪儿」的只留一条：光杆编号「1.」末尾补一个空格。
+// 别的都不搬了——原先还把插在记号前面的字挪到记号后面，那条在 clampSelectionToBody
+// 把光标夹到正文起点之后已经走不到，留着只会引诱下一个人再加回去
 const remapBeforeMarker = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged) return tr
   if (tr.annotation(fromOutside)) return tr
@@ -513,8 +689,13 @@ const remapBeforeMarker = EditorState.transactionFilter.of((tr) => {
     count++
     if (fix || fromA !== toA || !inserted.length) return
     const line = tr.startState.doc.lineAt(fromA)
-    const end = line.from + markerLen(line.text)
-    if (end > fromA) fix = { from: end, insert: inserted.toString() }
+    const text = inserted.toString()
+    // 光标压在光杆编号「1.」的末尾（编号后面那个空格还没写上）：接着写的字
+    // 前面补一个空格。存储口径要求编号后面必须有一个空格，不补的话「1.」后面
+    // 敲的「2」会粘成「1.2」——整行不再被认成编号行，前面那个号就跑进正文里了
+    if (fromA === line.to && /^[ \t]*\d+\.$/.test(line.text) && !/^[ 　]/.test(text)) {
+      fix = { from: fromA, insert: ' ' + text }
+    }
   })
   if (count !== 1 || !fix) return tr
   return {
@@ -525,12 +706,159 @@ const remapBeforeMarker = EditorState.transactionFilter.of((tr) => {
   }
 })
 
+// ===== 粘贴 =====
+
+// 「这一笔是贴进来的，别当敲字补号」。收尾拿它当 wasBlank 的否决票（见 settleInView）。
+// 只在一次贴进来好几行时才挂：整段的最后一行正停在光标上，不拦一下它会被当成
+// 「空行刚变成有字」而多出一个号——原文里它本来就没号（多半是说明、不是作业）。
+// 一次只贴一行的那句不挂：那就是手敲一个字的情形，界面上不该和敲出来的不一样
+const pastedFromClipboard = Annotation.define()
+
+// 剪贴板里那一段文字，先整理成正文该有的样子再进来：像标题的行补上 #，
+// 一行里挤着的条目拆开，CRLF 和多余空格收拾掉（见 homeworkPaste）。
+// 编号一概不补：原文没有号的行为什么是没有号的，那多半是说明、不是作业。
+// 插进去之后照常收尾：补号、重排编号都由 handleUpdate 那一条走完，
+// 和手敲进去的字走的是同一个口径
+function pasteText(text) {
+  if (!view || text == null || text === '') return false
+  const next = smartPaste(text)
+  view.dispatch({
+    // replaceSelection 给的是一整份事务说明（changes + selection），得摊开铺进来。
+    // 整个塞进 changes 里的话，那层对象没有 from/to/insert，CM 会当成空改动，
+    // 粘贴看起来「没反应」，连报错都没有
+    ...view.state.replaceSelection(next),
+    annotations: next.includes('\n') ? pastedFromClipboard.of(true) : undefined,
+  })
+  return true
+}
+
+// 原生 Ctrl+V / 右键粘贴走这一条，和外面那个粘贴按钮调的是同一个 pasteText，
+// 两条路不会切出两种结果。剪贴板里读不到纯文本（比如从图片上复制的）就交回原生
+function pasteFromClipboardEvent(event) {
+  const text = event.clipboardData?.getData('text/plain')
+  return text ? pasteText(text) : false
+}
+
 // ===== 键盘拦截 =====
+
+// 光标某一处几何。默认 assoc 量不出来的位置（记号正后方的 body 起点常常如此）
+// 换成贴左/贴右的偏置再量；还量不出才认输
+function coordAt(view, pos) {
+  let rect = view.coordsAtPos(pos)
+  if (!rect || rect.x == null) rect = view.coordsAtPos(pos, -1)
+  if (!rect || rect.x == null) rect = view.coordsAtPos(pos, 1)
+  return rect && rect.x != null ? rect : null
+}
+
+// 光标某一处的横坐标。记号右边那种位置 CM 有时量不出坐标（x 是 null），
+// 就借旁边字的位置凑：右边的字量不出左缘、左边的字量不出右缘，都没有就放弃
+function visualX(view, pos) {
+  const rect = coordAt(view, pos)
+  if (rect) return rect.x
+  const state = view.state
+  if (pos < state.doc.length) {
+    const next = coordAt(view, pos + 1)
+    if (next) return next.x
+  }
+  if (pos > 0) {
+    const prev = coordAt(view, pos - 1)
+    if (prev) return prev.x
+  }
+  return null
+}
+
+// 别把光标丢进四字节字（emoji）两个半截的中间。sliceString 才是字符串，
+// doc.slice 返回的是 Text 对象
+function midSurrogate(state, pos) {
+  const code = state.doc.sliceString(pos - 1, pos).charCodeAt(0)
+  return code >= 0xd800 && code < 0xdc00
+}
+
+// 上下键自己接管。原生 moveVertically 拿光标处的横坐标去目标行找最近落点，
+// 记号右边那个位置量不出坐标（x 是 null）就一行都对不上，按一下等于白按。
+// 这里按逻辑行走：落点在目标行的正文里逐位置量横坐标挑最近的。
+// 量不出现在的横坐标就落正文开头，比没反应强
+function moveVertically(view, down, extend) {
+  const state = view.state
+  const sel = state.selection.main
+  const line = state.doc.lineAt(sel.head)
+  const targetNumber = line.number + (down ? 1 : -1)
+  // 顶边/底边没有去处：吃掉按键别交给原生。原生在量不出几何的时候
+  // 会自己乱跳（实测最后一行按 Down 会跳去行尾）
+  if (targetNumber < 1 || targetNumber > state.doc.lines) return true
+  const target = state.doc.line(targetNumber)
+  // 候选从这一行的正文起点起：记号是零宽的，不把光标摆进记号里
+  const start = target.from + markerLen(target.text)
+  const x = visualX(view, sel.head)
+  // 量不出现在的横坐标就落正文开头，比没反应强
+  if (x == null) {
+    view.dispatch({
+      selection: extend ? EditorSelection.range(sel.anchor, start) : EditorSelection.cursor(start),
+    })
+    return true
+  }
+  // 目标行第一个能量出几何的位置当顶上那行的基准；折行第二行起不看——
+  // 上下键的落点只该在目标行顶上那一行里挑
+  let rowTop = null
+  let rowLimit = Infinity
+  let best = start
+  let bestDist = Infinity
+  for (let pos = start; pos <= target.to; pos++) {
+    if (pos > start && midSurrogate(state, pos)) continue
+    const rect = coordAt(view, pos)
+    if (!rect) continue
+    if (rowTop == null) {
+      rowTop = rect.top
+      rowLimit = rowTop + (rect.bottom - rect.top) * 0.5
+    } else if (rect.top > rowLimit) {
+      break
+    }
+    const dist = Math.abs(rect.x - x)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = pos
+    }
+  }
+  view.dispatch({
+    selection: extend ? EditorSelection.range(sel.anchor, best) : EditorSelection.cursor(best),
+  })
+  return true
+}
 
 // 中文输入法组字中（event.isComposing）不插手；其余键交给 CM6 原生
 function handleKeydown(event, view) {
+  // 输入法组字中不插手：拼音不按 keydown 走，这些自定义键一个都不该在组字时生效。
+  // 组字本身当普通输入处理（见 handleUpdate），只有「按键→动作」这一层让开
   if (event.isComposing) return false
   if (event.ctrlKey || event.metaKey || event.altKey) return false
+  if (event.key === 'Home' && !event.shiftKey) {
+    const line = view.state.doc.lineAt(view.state.selection.main.head)
+    view.dispatch({ selection: EditorSelection.cursor(line.from + markerLen(line.text)) })
+    return true
+  }
+  if (event.key === 'ArrowLeft') {
+    const sel = view.state.selection.main
+    const line = view.state.doc.lineAt(sel.head)
+    // 光标压着行首记号（记号是零宽的，正文起点和行首看着是同一个点）：
+    // 这一下就该一步退到上一行末尾。光标不会停在记号前面（见 clampSelectionToBody），
+    // 所以走到这儿就说明正站在正文起点上
+    const ml = markerLen(line.text)
+    if (ml > 0 && sel.head <= line.from + ml) {
+      if (line.number > 1) {
+        const prev = view.state.doc.line(line.number - 1)
+        view.dispatch({
+          selection: event.shiftKey
+            ? EditorSelection.range(sel.anchor, prev.to)
+            : EditorSelection.cursor(prev.to),
+        })
+      }
+      // 第一行的行首已经是全文开头，再往左没有地方，不动是正常的
+      return true
+    }
+  }
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    return moveVertically(view, event.key === 'ArrowDown', event.shiftKey)
+  }
   if (event.key === 'Enter') return enterAt(view)
   if (event.key === ' ' || event.key === '#') {
     const index = lineHeadIndex(view)
@@ -555,7 +883,13 @@ onMounted(() => {
       extensions: [
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
-        Prec.high(EditorView.domEventHandlers({ keydown: handleKeydown })),
+        Prec.high(EditorView.domEventHandlers({
+          // 组字一律不管：拼音不插事件、不参与 keydown，笔笔都当普通输入收尾
+          keydown: handleKeydown,
+          paste: pasteFromClipboardEvent,
+          copy: (event, view) => clipboardFromSelection(event, view, false),
+          cut: (event, view) => clipboardFromSelection(event, view, true),
+        })),
         EditorView.lineWrapping,
         decorationPlugin,
         gutter({
@@ -573,6 +907,7 @@ onMounted(() => {
           },
         }),
         refusedField,
+        clampSelectionToBody,
         remapBeforeMarker,
         EditorView.updateListener.of(handleUpdate),
       ],
@@ -591,10 +926,6 @@ onBeforeUnmount(() => {
 
 function focus() {
   view?.focus()
-}
-
-function getValue() {
-  return view ? view.state.doc.toString() : ''
 }
 
 function getSelection() {
@@ -623,7 +954,45 @@ function setValue(text, range) {
   emit('update:modelValue', next)
 }
 
-defineExpose({ focus, setValue, getValue, getSelection })
+// 只挪光标/选区，正文一个字都不动。setValue 那条路会把整份 doc 换一遍，
+// 打开面板时正文本来就刚换过一遍，没必要再来一次——多一次全量替换既白费，
+// 又会在撤销栈里多出一条没用的记录
+function setCaret(at, to = at) {
+  if (!view) return
+  const end = view.state.doc.length
+  view.dispatch({
+    selection: EditorSelection.single(
+      Math.max(0, Math.min(at, end)),
+      Math.max(0, Math.min(to, end)),
+    ),
+  })
+}
+
+// 小键盘上的回车／退格键走的入口：和键盘按键完全同一个语义，
+// 对话框那边不要再自己切一套字符串
+function keyEnter() {
+  if (view) enterAt(view)
+}
+
+function keyBackspace() {
+  if (!view) return
+  // deleteAt 不想插手时会返回 false。键盘按键那条路后面还跟着 CM 的
+  // defaultKeymap，退格由它兜住；按钮这条路没有后手，false 就等于什么都不做
+  // （实测小键盘删除键整格失灵）。所以这里自己把原生退格接上，
+  // 两边才是同一个语义
+  if (!deleteAt(view, false)) deleteCharBackward(view)
+}
+
+// 第 index 行是不是被用户明说过「不要编号」。这份状态只活在 refusedField 里
+// （正文存不下它），对话框那边要补号就得来问一句——它自己那份行号表早就错位了
+function isLineRefused(index) {
+  if (!view) return false
+  const line = view.state.doc.line(index + 1)
+  return isRefused(view.state, line.from)
+}
+
+// 外面那个「粘贴」按钮走的入口，和原生 Ctrl+V 完全同一个动作
+defineExpose({ focus, setValue, getSelection, setCaret, keyEnter, keyBackspace, isLineRefused, pasteText })
 
 // ===== 模型值外部更新 =====
 
@@ -646,7 +1015,6 @@ watch(
 .hwe-root {
   font-size: inherit;
   line-height: 1.5;
-  min-height: 8em;
 }
 
 .hwe-root :deep(.cm-editor) {
@@ -667,6 +1035,11 @@ watch(
 .hwe-root :deep(.cm-content) {
   padding: 0 4px;
   caret-color: rgb(var(--v-theme-on-surface));
+  /* 编辑框兜底高度。挂在 .cm-content 上而不是根元素上：正文短的时候下面那段
+     空白要是编辑框自己的（点它 = 点编辑框，光标落到文末），悬在根元素上就
+     成了一块「面板里的空白」，点一下等于点了外面，面板会关掉。
+     撑足高度顶住排版：短正文也占满这块，面板高度不跟着正文长短跳 */
+  min-height: 8em;
 }
 
 .hwe-root :deep(.cm-line) {
@@ -707,9 +1080,16 @@ watch(
   cursor: pointer;
 }
 
+.hwe-root :deep(.hwe-hide) {
+  display: inline-block;
+  width: 0;
+  user-select: none;
+  pointer-events: none;
+}
+
 .hwe-root :deep(.hwe-mark) {
   position: absolute;
-  top: 0;
+  top: 0.15em;
   right: 4px;
   font-size: 0.8em;
   white-space: nowrap;
