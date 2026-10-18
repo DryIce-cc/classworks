@@ -17,7 +17,7 @@ import {
 } from '@codemirror/state'
 import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, gutter, keymap } from '@codemirror/view'
 import { defaultKeymap, deleteCharBackward, history, historyKeymap } from '@codemirror/commands'
-import { ghostNumber, joinContent, nextNumber, renumberAll, splitContent, stripBareNumbers } from '@/utils/homeworkList'
+import { STORED_NUMBER, ghostNumber, joinContent, nextNumber, renumberAll, splitContent, stripBareNumbers } from '@/utils/homeworkList'
 import { smartPaste } from '@/utils/homeworkPaste'
 import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
 import { HEADING_PREFIX, parseHeadingLine } from '@/utils/homeworkReserve'
@@ -31,12 +31,12 @@ const emit = defineEmits(['update:modelValue', 'selection-change'])
 
 // ===== 行列记号的口径 =====
 
-// 存储口径的行首编号：数字 + 句点，点后面必须紧跟一个空格或者就是行尾
-const STORED = /^(\d+)\.(?=[ 　]|$)/
+// 存储口径的行首编号直接用 homeworkList 的 STORED_NUMBER：
+// 数字 + 句点，点后面必须紧跟一个空格或者就是行尾
 
 // 「1. 」这一截占几个字（含紧跟的那一个空格，只认一个）。不是编号行返回 0
 function numberLen(text) {
-  const found = STORED.exec(text)
+  const found = STORED_NUMBER.exec(text)
   if (!found) return 0
   return found[0].length + (/^[ 　]/.test(text.slice(found[0].length)) ? 1 : 0)
 }
@@ -63,6 +63,9 @@ function bodyOf(text) {
 // 「1.」后面什么都没跟时也补一个空格——接着敲的「5米」才落在正文里，
 // 不补的话「1.5米」会读成没有编号的一整行
 function normalizeTyped(line) {
+  // 这条比 STORED_NUMBER 松：允许行首带空格/Tab，也不要求点后已经有空格。
+  // 它看的是用户刚敲出来的手写号（「1.订正」），要把这种补成存储口径；
+  // STORED_NUMBER 看的是已经存下来的正文，点后没有空格就不是编号，两者不能共用
   const found = /^([ \t]*)(\d+)\./.exec(line)
   if (!found) return line
   const after = line.slice(found[0].length)
@@ -92,6 +95,9 @@ function settle(oldDoc, newDoc, anchor) {
   // 那些行的正文是被认成编号后才空的，不是用户把正文删掉了（见下面）
   const typed = new Set()
   for (let i = 0; i < texts.length; i++) {
+    // 这条也不与 STORED_NUMBER 共用：它只要求点后不是数字，不要求是空格或行尾。
+    // 上面 normalizeTypedNumbers 已经把手写的「1.订正」补成「1. 订正」，
+    // 这里是在补完之后再认一遍，判宽一点不会漏；存储口径必须严格，两者不同用途
     const found = /^(\d+)\.(?!\d)/.exec(texts[i])
     if (!found) continue
     const n = Number(found[1])

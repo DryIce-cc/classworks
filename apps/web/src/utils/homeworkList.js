@@ -7,21 +7,21 @@
 // 只有正文这一个坐标系：编辑器（CM）的 doc 就是正文，编号和 # 都真在 doc 里，
 // 只是用 Decoration 藏起来、画到左边的编号栏上。所以这里拆出来的 bodies /
 // bodyStarts 是「同一份正文的另一种切法」，供算行首前缀长度用（见 prefixAt），
-// 不是另一套坐标——别再拿它和正文里的偏移互相换算了，那条路（contentToBody /
-// mergeBody）已经跟着粘贴一起删掉了，位置一律直接用正文里的偏移。
+// 不是另一套坐标：位置一律直接用正文里的偏移，不要再拿它和正文里的偏移互相换算。
 
 import { isBodyLine, isHeadingLine, lineIndexAt } from './homeworkText'
 
 // 存储口径的行首编号。只吃「数字 + 句点」这一截（空格用前瞻，不吃进来），
-// 句点后面必须紧跟一个空格或者就是行尾，否则「1.5米」这种会被当成编号行
-const STORED = /^(\d+)\.(?=[ 　]|$)/
+// 句点后面必须紧跟一个空格或者就是行尾，否则「1.5米」这种会被当成编号行。
+// 编辑框（HomeworkEditor）判断行首编号也复用这一份，别在那边再写一遍
+export const STORED_NUMBER = /^(\d+)\.(?=[ 　]|$)/
 
 // 一行开头那个编号有多少个字符（含后面紧跟的那个空格），编号是几。
 // 不是编号行返回 { number: 0, prefix: 0 }。正文以空格开头也得原样留着（只摘一个），
 // 不然这一行就还原不回去了。展示板渲染悬挂对齐时也拿这个（编辑框那边编号
 // 在左边的编号栏上，不走这儿）
 export function storedNumber(line) {
-  const found = STORED.exec(line)
+  const found = STORED_NUMBER.exec(line)
   if (!found) return { number: 0, prefix: 0 }
   const space = /^[ 　]/.test(line.slice(found[0].length)) ? 1 : 0
   return { number: Number(found[1]), prefix: found[0].length + space }
@@ -71,13 +71,11 @@ export function splitContent(content) {
 
 // 正文拼回去：编号行拼成「N. 正文」，没编号的行原样。
 // 正文为空也留一个「N.」（不补那个空格），不然读回来就不认得了。
-// numbers 里可能有 -1（这行被用户明说「不要号」，见 toggleLineNumber），
-// 那也是没编号，别拼成「-1. 正文」
 export function joinContent(texts, numbers) {
   return texts
     .map((text, index) => {
       const n = numbers[index]
-      if (!n || n < 0) return text
+      if (!n) return text
       return text ? `${n}. ${text}` : `${n}.`
     })
     .join('\n')
@@ -100,7 +98,7 @@ function sectionBounds(texts, index) {
 }
 
 // 那一节里 index 之前最后一个编号是多少，没有就是 0
-export function numberBefore(texts, numbers, index) {
+function numberBefore(texts, numbers, index) {
   for (let i = index - 1; i >= 0; i--) {
     if (!isBodyLine(texts[i])) return 0
     if (numbers[i] > 0) return numbers[i]
@@ -122,25 +120,12 @@ export function ghostNumber(texts, numbers, index) {
   return nextNumber(texts, numbers, index)
 }
 
-// 敲完一下之后的编号收尾。只做一件事：把整篇按「每一段落从上到下连号」
-// 重排一遍——用户改了一行（清空、改字、删行、插空行分段），编号就该跟着动。
-//
-// 排的是整篇而不是光标那一节：插一个空行把一段劈成两段时，光标在上一段，
-// 但下一段也得从 1 重新数起；删个空行把两段并成一段时，整段接着往下数。
-// 只盯着光标那一段，另一边的编号就永远停在旧值上。
-//
-// 这里不凭空新增编号。正文空着的行归 commitBlank 那一下管——它看的是
-// 「这一行刚才还是空的」，有据可依；不是每敲一个字都去猜哪些行该有号
-export function settleEdit(texts, numbers) {
-  renumberAll(texts, numbers)
-}
-
 // 空行刚敲上字时的补号：每一行都默认该有编号，敲上字就把它接上。
-//   0  → 还没编号、等着补：补一个，接同一段里上一个有编号的行往下编
-//   -1 → 用户点过按钮 / 按过空格 / 按过删除键，明说了这一行不要号，不给
+//   0   → 还没编号、等着补：补一个，接同一段里上一个有编号的行往下编
 //   正数 → 已经有号了（敲的 `3.`，或者回车时挂上的），一个字不动
 // 只认「刚变有字」这一下：已经有字的行被继续编辑，编号不因为「动了它」而变。
-// 早先这里是每次输入都补，用户主动去掉的号一进去编辑又冒出来
+// 早先这里是每次输入都补，用户主动去掉的号一进去编辑又冒出来。
+// 「这一行不要号」由编辑器的 refusedField 记着（那个状态不进正文），所以这里没有 -1 这一档
 export function commitBlank(texts, numbers, index) {
   if (index < 0 || index >= texts.length) return
   if (!isBodyLine(texts[index]) || numbers[index] !== 0) return
@@ -175,9 +160,13 @@ function renumberRange(texts, numbers, begin, end) {
   }
 }
 
-// 整篇重排编号，就地改 texts 之外的两个数组。
-// 空行和标题行原样跳过、不动它们的号：那上面可能挂着用户刚敲的号（见 renumberRange）。
-// 要写盘、上板之前，走 renumberContent，那儿会再清一遍
+// 敲完一下之后的编号收尾：整篇重排一遍，就地改 numbers（编号不进 texts，光标不用动）。
+// 排的是整篇而不是光标那一节——插空行把一段劈成两段时，下一段也得从 1 重新数起；
+// 删空行把两段并成一段时，整段接着往下数。只盯光标那一段，另一边的编号就永远停在旧值上。
+//
+// 这里不凭空新增编号：空行刚敲上字要补号归 commitBlank 管（它看的是「这一行刚才还是空的」）。
+// 空行和标题行在这趟里原样跳过、不动它们的号：那上面可能挂着用户刚敲的号（见 renumberRange）。
+// 要写盘、上板之前走 renumberContent，那儿会再清一遍
 export function renumberAll(texts, numbers) {
   let index = 0
   while (index < texts.length) {

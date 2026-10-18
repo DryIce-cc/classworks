@@ -201,6 +201,11 @@ export default defineConfig(({ command }) => ({
     Components({
       directoryAsNamespace: false,
       globs: ['src/components/**/[A-Z]*.vue'],
+      // index.vue 是手动 defineAsyncComponent 懒加载编辑面板的。若让插件也把这个
+      // 文件当组件自动解析，就多注入一条静态 import，Rollup 于是不再单独分包、
+      // 懒加载白写（构建时会告警「dynamically imported but also statically imported」）。
+      // 把这个文件排除出自动检测，交给手动注册那条路
+      globsExclude: ['**/HomeworkEditDialog.vue'],
     }),
     AutoImport({
       imports: ['vue', 'vue-router'],

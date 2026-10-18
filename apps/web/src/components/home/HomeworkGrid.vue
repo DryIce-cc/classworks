@@ -105,16 +105,17 @@
 </template>
 
 <script>
-import { storedNumber } from '@/utils/homeworkList'
+import { holdLeavingBox } from '@/utils/domHold'
+import { splitContent } from '@/utils/homeworkList'
 import { parseHeadingLine } from '@/utils/homeworkReserve'
+import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
+import { assignColumns as distributeColumns } from '@/utils/masonry'
 
 // 窗口常年最大化，列数固定，不再按宽度分档
 const MAX_COLUMNS = 3
 // 「点击添加作业」卡片露在视野里又没人理，3s 后就把它上滑出去
 const IDLE_SCROLL_DELAY = 3000
-// 标题行：与文本层（homeworkText.js 的 isHeadingLine）同口径，
-// 行首允许空格/Tab 缩进，# 开头即标题，不再限空格个数、不限有无正文
-const HEADING_LINE = /^[ \t]*[#]/
+// 标题行判定走文本层的 isHeadingLine，展示板这边不再另写一份正则
 
 // 一个序号占多宽（单位 em）。数字按等宽数字估（0.62em），句点那一位加上（0.42em）。
 // 这只是个估算，跟正文字体对不上是常态：宁可让框比字宽一点，
@@ -158,10 +159,25 @@ export default {
       return Math.max(1, Math.min(count, MAX_COLUMNS))
     },
     // 渲染用的分列结果（透传方法，保证每次拿到的都是现算的）
-columnItems() {
+    columnItems() {
       // 列分配依赖字号和布局，窗口一变就得重算
       void this.layoutVersion
       return this.assignColumns()
+    },
+    // 每张卡各段正文的解析结果（按段切开），cardNumCol 和 buildDays 共用这一份。
+    // 两个方法都在模板里逐帧调用，各解析一遍等于每帧白算一次；
+    // 这里用 computed 缓存：依赖 sortedItems（含各卡的 segments.content），
+    // 正文一变自然失效重算，不会读到上一版内容。
+    // key 用卡片对象本身而不是 item.key，同一科目出现两张卡时也不会互相串
+    parsedCards() {
+      const parsed = new Map()
+      for (const item of this.sortedItems || []) {
+        parsed.set(
+          item,
+          (item.segments || []).map((segment) => this.parseParagraphs(segment.content)),
+        )
+      }
+      return parsed
     },
   },
   mounted() {
@@ -230,20 +246,8 @@ columnItems() {
       })
     },
 
-    // 离场的卡片马上要脱离文档流（见 transitions.scss 的 .v-list-leave-active），
-    // 脱离后网格不再给它宽度、静态位置也会重排到别的格子去，淡出那一瞬看着像
-    // 「往下挪一截再消失」。这里把当前的位置和尺寸钉死，它就只在原地淡出
-    holdLeavingBox(el) {
-      const box = el.getBoundingClientRect()
-      const host = el.offsetParent
-      if (host) {
-        const hostBox = host.getBoundingClientRect()
-        el.style.left = `${box.left - hostBox.left + host.scrollLeft}px`
-        el.style.top = `${box.top - hostBox.top + host.scrollTop}px`
-      }
-      el.style.width = `${box.width}px`
-      el.style.height = `${box.height}px`
-    },
+    // 离场卡片钉在原位（实现见 utils/domHold，与设置页共用同一份）
+    holdLeavingBox,
 
     // 点卡片上某一天的那一块：直接进那一天，不用先进今天再自己往前翻。
     // 卡片冒泡上来的那次点击（标题区、卡片留白）不带日期，走的是另一条路
@@ -281,163 +285,14 @@ columnItems() {
       window.scrollTo({ top: window.scrollY - distance, behavior: 'smooth' })
     },
 
-    // 按实测高度把卡片分列。各列等宽，卡片高度与分列结果无关，
-    // 所以量一次就能收敛，不会循环。
+    // 按实测高度把卡片分列（算法在 utils/masonry，这里只管把「卡片对象 ↔ 下标」对上）。
     // 还没量到高度时（首屏第一帧）按序号取余，保证每张都有位置、能被量到。
     // 注意：必须是普通方法（每次现算），不能是 computed——
     // 高度存在非响应式的 _heights 里，computed 缓存会让 updateLayout 永远读到旧分配
     assignColumns() {
-      const cols = Array.from({ length: this.effectiveColumns }, () => [])
-      if (!this.sortedItems || !this.sortedItems.length) return cols
-      const heights = this.sortedItems.map((item) => this._heights?.[item.key])
-      // 有卡片还没量到高度：先按序号取余分列，等量到了自然会重排
-      if (heights.some((h) => h == null)) {
-        this.sortedItems.forEach((item, idx) => cols[idx % cols.length].push(item))
-        return cols
-      }
-      return this.solveColumns(heights).map((idxs) => idxs.map((i) => this.sortedItems[i]))
-    },
-
-    // 回溯求最优分列：先让最高的那一列尽量矮，再让各列挨得更齐，
-    // 最后才在同样高的方案里挑「卡片按科目顺序往下接在同一列」的那种。
-    // 四级比较依次是「最高列高 → 列高极差 → 列高方差 → 科目顺序」，
-    // 卡在第一级就不看后面几级，所以不会为了顺序去牺牲整体高度
-    solveColumns(heights) {
-      const c = this.effectiveColumns
-      const n = heights.length
-      const avg = heights.reduce((sum, h) => sum + h, 0) / c
-      // 高度是量出来的整数，这个容差只为躲开浮点累加的零头
-      const EPS = 1e-6
-      // 搜索规模（科目数 × 列数）不大，但最坏情况仍有可能翻车；
-      // 给个节点上限，超了就取搜索途中最好的那个，绝不卡住界面
-      const budget = 250000
-
-      // 四级比较。方差除以列数是同一个常数，不影响比较，省掉
-      // 第四级是「科目顺序」：同样的高度方案有好几种时，挑卡片按科目顺序
-      // 往下接在同一列的那种（第一科在最左列、第二科接着它下面，而不是跳到右边）。
-      // 越靠前的卡片权重越大，所以「能接就接」压过「反正都一样高，随便分」
-      const measure = (loads, assign) => {
-        let max = 0
-        let min = Infinity
-        let variance = 0
-        for (const load of loads) {
-          if (load > max) max = load
-          if (load < min) min = load
-          variance += (load - avg) ** 2
-        }
-        let order = 0
-        for (let i = 0; i < assign.length; i++) order += assign[i] * (n - i)
-        return [max, max - min, variance, order]
-      }
-      const better = (a, b) =>
-        a[0] < b[0] - EPS || (a[0] < b[0] + EPS && a[1] < b[1] - EPS) ||
-        (a[0] < b[0] + EPS && a[1] < b[1] + EPS && a[2] < b[2] - EPS) ||
-        (a[0] < b[0] + EPS && a[1] < b[1] + EPS && a[2] < b[2] + EPS && a[3] < b[3] - EPS)
-
-      // 贪心解当上界：一份按原始顺序放最矮列，一份按高度降序放最矮列（更接近最优）
-      const greedy = (order) => {
-        const loads = new Array(c).fill(0)
-        const assign = new Array(n).fill(-1)
-        for (const i of order) {
-          let target = 0
-          if (i > 0) {
-            for (let j = 1; j < c; j++) if (loads[j] < loads[target]) target = j
-          }
-          loads[target] += heights[i]
-          assign[i] = target
-        }
-        return { loads, assign }
-      }
-
-      // 展示板上的第一科（语文）永远是左上角那张，先把它放进最左列，剩下的卡片再搜。
-      // 不能靠「第一个开出来的列就是最左列」顺带钉住它：那样最高的那张卡片会被
-      // 强行塞进语文那一列，卡片只能往上压，长卡片反而露不出来
-      const rest = heights
-        .map((_, i) => i)
-        .filter((i) => i > 0)
-        // 一样高的卡片按科目原顺序处理，不按索引顺序乱来
-        .sort((a, b) => heights[b] - heights[a] || a - b)
-      const m = rest.length
-      const seq = heights.map((_, i) => i)
-      const byHeight = greedy([0, ...rest])
-      const inOrder = greedy(seq)
-      let bestLoads = better(measure(byHeight.loads, byHeight.assign), measure(inOrder.loads, inOrder.assign)) ? byHeight : inOrder
-      let bestScore = measure(bestLoads.loads, bestLoads.assign)
-      let bestAssign = bestLoads.assign
-
-      // 剩余卡片高度总和，用来判断「剩下的卡片总容量装不装得下」
-      const suffix = new Array(m + 1).fill(0)
-      for (let k = m - 1; k >= 0; k--) suffix[k] = suffix[k + 1] + heights[rest[k]]
-      const minLoad = (used) => {
-        let min = Infinity
-        for (let j = 0; j < used; j++) if (loads[j] < min) min = loads[j]
-        return min
-      }
-
-      const loads = new Array(c).fill(0)
-      loads[0] = heights[0]
-      const assign = new Array(n).fill(-1)
-      assign[0] = 0
-      let left = budget
-      let sum = heights[0]
-
-      const search = (k, used) => {
-        if (left-- <= 0) return
-        if (k === m) {
-          const score = measure(loads, assign)
-          if (better(score, bestScore)) {
-            bestScore = score
-            bestAssign = assign.slice()
-          }
-          return
-        }
-        // 已经有列高过当前最优的最高列：后面只会更高，直接剪
-        for (let j = 0; j < used; j++) if (loads[j] > bestScore[0] + EPS) return
-        // 剩下的卡片就算塞满 c 列的余量也超了：塞不下，剪
-        if (sum + suffix[k] > c * (bestScore[0] + EPS)) return
-        const i = rest[k]
-        const h = heights[i]
-        // 列都用满了的话，最大的这张得先放得下才有可能
-        if (used >= c && h > bestScore[0] - minLoad(used) + EPS) return
-
-        // 各列没有区别，当前高度相同的列只试一个，免得同一批分配被枚举好几遍。
-        // 最左列不算在内：语文在那儿，它跟别的列换不了位置
-        const tried = []
-        for (let j = 0; j < used; j++) {
-          if (j > 0) {
-            if (tried.includes(loads[j])) continue
-            tried.push(loads[j])
-          }
-          if (loads[j] + h > bestScore[0] + EPS) continue
-          loads[j] += h
-          sum += h
-          assign[i] = j
-          search(k + 1, used)
-          loads[j] -= h
-          sum -= h
-          assign[i] = -1
-          if (left <= 0) return
-        }
-        // 开新列：语文之外各列之间没有区别，只开第一个空列
-        if (used < c) {
-          loads[used] = h
-          sum += h
-          assign[i] = used
-          search(k + 1, used + 1)
-          loads[used] = 0
-          sum -= h
-          assign[i] = -1
-        }
-      }
-      search(0, 1)
-
-      // 搜索里列是按「先开出来」的顺序编号的，列与列之间本来就没有区别，
-      // 所以左右顺序由各列第一张卡片的科目顺序定下来（语文那列自然还在最左边）。
-      // 卡片入列时是按原序推进的，每列第一张就是视觉上的最上面那张
-      const cols = Array.from({ length: c }, () => [])
-      for (let i = 0; i < n; i++) cols[bestAssign[i]].push(i)
-      cols.sort((a, b) => (a.length ? a[0] : Infinity) - (b.length ? b[0] : Infinity))
-      return cols
+      const items = this.sortedItems || []
+      const heights = items.map((item) => this._heights?.[item.key])
+      return distributeColumns(heights, this.effectiveColumns).map((idxs) => idxs.map((i) => items[i]))
     },
 
     // 实测每张卡片高度，按签名变化才触发重排，保证收敛不循环
@@ -483,8 +338,8 @@ columnItems() {
     // 正文就被顶到中间去了。只留正文之间那一个空格，贴着卡片左边开始
     cardNumCol(item) {
       let max = 0
-      for (const segment of item.segments || []) {
-        for (const para of this.parseParagraphs(segment.content)) {
+      for (const paras of this.parsedSegments(item)) {
+        for (const para of paras) {
           for (const line of para.lines) {
             if (line.number) max = Math.max(max, numColEm(line.number))
           }
@@ -494,15 +349,19 @@ columnItems() {
     },
     buildDays(item) {
       const days = []
-      for (const segment of item.segments || []) {
-        const blocks = this.parseParagraphs(segment.content).map((para) => {
+      const segments = item.segments || []
+      // 与 segments 一一对应，跟 cardNumCol 用的是同一份解析结果
+      const parsed = this.parsedSegments(item)
+      for (let index = 0; index < segments.length; index++) {
+        const segment = segments[index]
+        const blocks = (parsed[index] || []).map((para) => {
           // 没小标题的那一段就叫「作业」，没有颜色、没有自己的日期
           const head = para.heading || { day: '', gap: '', title: '作业' }
           return {
             custom: para.heading !== null,
             day: head.day,
             title: head.gap + head.title,
-lines: para.lines,
+            lines: para.lines,
           }
         })
         // 空的段（比如正文只剩空行）不占一块
@@ -515,13 +374,24 @@ lines: para.lines,
       }
       return days
     },
-// 正文分段：空行断段，标题行永远另起一段（前面有没有空行都一样）。
-// 标题行剥掉行首缩进、# 和可选的颜色代码，剩下的按「日期几个字 / 标题名」切开——
-// 日期那块刷黄、标题名用那个颜色代码染（编辑框里的上色是同一份解析，见 parseHeadingLine）。
-// 它下面到空行或下一个标题行为止的正文都归它，没有正文也算一段，
-// 渲染成只有小标题的空段
+    // 一张卡各段正文的解析结果，按 segments 的顺序排。
+    // 正常走 parsedCards 那份缓存；缓存里没有（理论上不会发生）就现解析一份兜底，
+    // 保证渲染结果不受缓存命中与否影响
+    parsedSegments(item) {
+      const cached = this.parsedCards.get(item)
+      if (cached) return cached
+      return (item.segments || []).map((segment) => this.parseParagraphs(segment.content))
+    },
+    // 正文分段：空行断段，标题行永远另起一段（前面有没有空行都一样）。
+    // 标题行剥掉行首缩进、# 和可选的颜色代码，剩下的按「日期几个字 / 标题名」切开——
+    // 日期那块刷黄、标题名用那个颜色代码染（编辑框里的上色是同一份解析，见 parseHeadingLine）。
+    // 它下面到空行或下一个标题行为止的正文都归它，没有正文也算一段，
+    // 渲染成只有小标题的空段
     parseParagraphs(content) {
       if (content == null) return []
+      // 行和行首编号都走文本层的 splitContent（里面是同一个 storedNumber），
+      // 展示板不再自己拆一遍。先归一 CRLF：文本层只按 \n 切
+      const map = splitContent(String(content).replace(/\r\n?/g, '\n'))
       const paras = []
       let current = null
       let seq = 0
@@ -532,17 +402,16 @@ lines: para.lines,
         current = null
         seq = 0
       }
-      for (const raw of String(content).replace(/\r\n?/g, '\n').split('\n')) {
-        if (raw.trim() === '') {
+      for (let index = 0; index < map.lines.length; index++) {
+        const raw = map.lines[index]
+        // 空行和标题行都是段边界（文本层 isBodyLine 的口径），标题行还要另起一段
+        if (!isBodyLine(raw)) {
           push()
-          continue
-        }
-        if (HEADING_LINE.test(raw)) {
-          push()
+          if (!isHeadingLine(raw)) continue
           const head = parseHeadingLine(raw)
           current = head
             ? { heading: head, lines: [] }
-            // 不是标题行也要兜住（HEADING_LINE 和它按同一口径判定，
+            // 不是标题行也要兜住（isHeadingLine 和它按同一口径判定，
             // 这里只是不把一条解析失败当成崩溃的理由）
             : { heading: { day: '', gap: '', title: raw.replace(/^[ \t]*#+/, '').trim() }, lines: [] }
           continue
@@ -550,14 +419,16 @@ lines: para.lines,
         if (!current) current = { heading: null, lines: [] }
         // 正文行带上编号（{ number, text }）：模板靠它做悬挂对齐。
         // 拆的规矩和存储那边是同一个函数，两边各认一遍早晚会切出两条不一样的线
-        const { number, prefix } = storedNumber(raw)
-        const text = prefix ? raw.slice(prefix) : raw
+        const number = map.numbers[index]
+        const text = map.texts[index]
         // 光秃秃一个号的行（「3.」）：什么都不写就不该在板上摆一条出来。
         // 那是编辑时留着接着写的位置，不是已经有一条作业了
         if (!text.trim()) continue
         // 板上编号跟编辑时同一个口径：每段里从上到下连续。
         // 存档里可能留着旧乱号（中间的空行占着号），板上一抹就露 1. 3. 的断层，
-        // 该按连续摆出来，别把断层摆给读者看
+        // 该按连续摆出来，别把断层摆给读者看。
+        // 这里不能用文本层的 renumberAll 等价替换：它会把上面那种光杆编号行
+        // 也算成一条作业、占掉一个号，而板上那行根本不显示，两边的号就对不上了
         current.lines.push({ number: number ? ++seq : 0, text })
       }
       push()

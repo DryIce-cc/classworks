@@ -48,7 +48,7 @@ const TITLE_HEAD = new RegExp(`^([^：:]{1,${HEAD_LIMIT}})([：:])([\\s\\S]*)$`)
 
 // 从第 i 个字开始是不是一个序号（「1.」「12.」），是的话它占几个字，不是就 0。
 // 点后面还是数字就不算——「1.5米」是一整行正文，前面那个号跑进正文里了。
-// 口径和 homeworkList 的 STORED / TYPED 一样，别处认成序号这里也得认
+// 口径和 homeworkList 的 STORED_NUMBER 一样，别处认成序号这里也得认
 function markerWidth(line, i) {
   if (!isDigit(line[i])) return 0
   const digits = isDigit(line[i + 1]) ? 2 : 1

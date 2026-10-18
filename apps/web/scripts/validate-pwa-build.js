@@ -83,27 +83,9 @@ if (!manifest) {
     fail('manifest 缺少 categories，Microsoft Store/PWABuilder 会降低质量评分。')
   }
 
-  // file_handlers / protocol_handlers 为可选：声明了才校验，不声明不报错
-  const fileHandlers = Array.isArray(manifest.file_handlers) ? manifest.file_handlers : []
-  if (fileHandlers.length > 0) {
-    const fileExtensions = new Set(
-      fileHandlers.flatMap((handler) => Object.values(handler.accept || {}).flat()),
-    )
-    if (!fileExtensions.has('.csb') || !fileExtensions.has('.csi')) {
-      fail('manifest.file_handlers 既然声明了，就必须允许 .csb 和 .csi。')
-    }
-  }
-
-  const protocolHandlers = Array.isArray(manifest.protocol_handlers)
-    ? manifest.protocol_handlers
-    : []
-  if (protocolHandlers.length > 0) {
-    if (
-      !protocolHandlers.some((handler) => handler.url?.includes('%s'))
-    ) {
-      fail('manifest.protocol_handlers 既然声明了，url 必须包含 %s。')
-    }
-  }
+  // file_handlers / protocol_handlers 的校验已删：这两项在 vite.config.mjs 里
+  // 从来没声明过（那是给「用本应用打开 .csb 文件」的桌面集成留的口子，代码里零实现），
+  // 留着只会是一段永远进不去的死分支
 
   if (manifest.edge_side_panel) {
     fail('manifest 不应声明 edge_side_panel。')

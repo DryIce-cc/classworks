@@ -154,49 +154,20 @@
 </template>
 
 <script>
-import dataProvider from '@/utils/dataProvider.js'
-import { cloneDefaultSubjects, normalizeSubjects } from '@/utils/subjects.js'
+import { hitTest as hitTestCell } from '@/utils/cardDrag.js'
+import { holdLeavingBox } from '@/utils/domHold.js'
+import { readSubjects, saveSubjects } from '@/utils/subjectStore.js'
+import {
+  cloneDefaultSubjects,
+  nextSubjectUid,
+  toStoredSubjects,
+  toViewSubjects,
+} from '@/utils/subjects.js'
 
-// 存档键：与首页读科目配置用的是同一个
-const STORAGE_KEY = 'classworks-config-subject'
 // 按下到挪动超过这个距离才算拖动，否则当作普通点击（手抖一下不该把卡片拖走）
 const DRAG_THRESHOLD = 4
 // 卡片上能点的地方不从这儿起拖，否则点一下就变成拖卡片，这些控件全点不动了
 const INTERACTIVE = 'input, textarea, button, .v-btn, .v-switch, .v-chip, .v-overlay'
-
-// 科目在组件内的身份标识。order 会随排序变，拿它当 key 的话卡片被就地复用，
-// 输入框里的内容会跟着串位，所以另给一个会话内稳定的 uid；它不落盘
-let uidSeq = 0
-const nextUid = () => `subject-${++uidSeq}`
-
-// 内存里的科目不带 order：顺序就是数组下标，存盘时按位置重算，
-// 少一个会和人手改的 order 打架的字段
-// 空名在这里就补上占位名：一份带着空科目名的存档，以后每次存都会把名字写空
-const withUids = (list) =>
-  list.map((subject) => ({
-    name: String(subject?.name ?? '').trim() || '未命名',
-    multiHomework: !!subject?.multiHomework,
-    extraSubjects: [...(subject?.extraSubjects || [])],
-    uid: nextUid(),
-  }))
-
-// 值到 [start, start + size) 这一段的距离，落在段内就是 0
-function bandDistance(value, start, size) {
-  return value < start ? start - value : value > start + size ? value - (start + size) : 0
-}
-
-// 就近取一个分段，返回它的 start。指针落在两段之间的空隙里时也不会在两者间反复横跳
-function nearestBand(value, bands) {
-  let best = bands[0].start
-  let bestDistance = Infinity
-  for (const band of bands) {
-    const distance = bandDistance(value, band.start, band.size)
-    if (distance > bestDistance) continue
-    bestDistance = distance
-    best = band.start
-  }
-  return best
-}
 
 export default {
   name: 'SubjectManagementCard',
@@ -250,29 +221,16 @@ export default {
     // ------------------------------------------------------------------ 读配置
 
     async loadConfig() {
-      let list
-      try {
-        const response = await dataProvider.loadData(STORAGE_KEY)
-        if (Array.isArray(response)) {
-          // 规整顺带补齐附加属性：旧存档里没有的字段在这里长出来，不会被读丢
-          list = normalizeSubjects(response)
-        } else if (response?.success === false) {
-          // 读不到 key 时 dataProvider 返回 { success: false }，
-          // 必须判 success 而不是判真值
-          list = cloneDefaultSubjects()
-          this.$message.info('使用默认配置')
-        } else {
-          // 存档里存的不是清单，多半是写坏了或旧版本的残留，当没有存档处理
-          console.warn('科目存档格式不对，改用默认配置:', response)
-          list = cloneDefaultSubjects()
-          this.$message.warning('科目存档格式不对', '已改用默认配置')
-        }
-      } catch (error) {
-        console.error('读取科目配置失败:', error)
-        list = cloneDefaultSubjects()
-        this.$message.error('读取科目配置失败', '暂用默认配置显示')
+      const { subjects, status, raw } = await readSubjects()
+      if (status === 'invalid') {
+        // 存档里存的不是清单，多半是写坏了或旧版本的残留，当没有存档处理
+        console.warn('科目存档格式不对，改用默认配置:', raw)
+        this.$message.warning('科目存档格式不对', '已改用默认配置')
+      } else if (status !== 'ok') {
+        // 没存过（首次进来）和读失败都按默认清单走
+        this.$message.info('使用默认配置')
       }
-      this.subjects = withUids(list)
+      this.subjects = toViewSubjects(subjects)
       this.extraDrafts = {}
       this.renameFrom = ''
       this.savedSnapshot = this.serialize()
@@ -283,14 +241,7 @@ export default {
 
     // 落盘只认序列化后的字符串。uid 和 order 是内存里的东西，不能进存档
     serialize() {
-      return JSON.stringify(
-        this.subjects.map((subject, index) => ({
-          name: subject.name,
-          order: index,
-          multiHomework: !!subject.multiHomework,
-          extraSubjects: [...subject.extraSubjects],
-        })),
-      )
+      return JSON.stringify(toStoredSubjects(this.subjects))
     },
 
     async saveConfig() {
@@ -300,8 +251,8 @@ export default {
       if (payload === this.savedSnapshot) return
       this.loading = true
       try {
-        const response = await dataProvider.saveData(STORAGE_KEY, JSON.parse(payload))
-        if (response?.success === false) throw new Error(response.error?.message || '保存失败')
+        const response = await saveSubjects(this.subjects)
+        if (!response.ok) throw new Error(response.error?.message || '保存失败')
         this.savedSnapshot = payload
         this.$message.success('配置已保存')
       } catch (error) {
@@ -322,7 +273,7 @@ export default {
     addSubject() {
       const name = this.newSubjectName.trim()
       if (!name) return
-      const subject = { name, multiHomework: false, extraSubjects: [], uid: nextUid() }
+      const subject = { name, multiHomework: false, extraSubjects: [], uid: nextSubjectUid() }
       this.subjects = [...this.subjects, subject]
       this.addDialog = false
       this.newSubjectName = ''
@@ -348,7 +299,7 @@ export default {
 
     resetToDefault() {
       this.resetDialog = false
-      this.subjects = withUids(cloneDefaultSubjects())
+      this.subjects = toViewSubjects(cloneDefaultSubjects())
       this.extraDrafts = {}
       this.renameFrom = ''
     },
@@ -476,21 +427,12 @@ export default {
       return true
     },
 
-    // 命中测试：把指针落到网格的哪一格（第几行、第几列），这一格在数组里就是唯一的一个
-    // 下标，于是无论指针怎么在格子里抖，答案都只有一个，位置就不会来回跳。
-    // 早先的写法是「就近认一张卡片」，行与行之间的空隙里，上一张算出「插它后面」、
-    // 下一张算出「插它前面」，两个下标差着一整段，指针一晃位置就被来回甩。
-    // 返回插进「去掉被拖那张」的数组里的下标。
-    // 量的是 offsetLeft/offsetTop 这些布局值，不含 TransitionGroup 让位时挂的
-    // transform——量矩形会量到动画中途的位置，插入位置跟着乱跳
+    // 命中测试：量出网格里每张卡片的布局位置，交给 cardDrag 的纯几何函数算插入下标
     hitTest(x, y, drag, from) {
       const grid = drag.grid
       if (!grid) return null
       const origin = grid.getBoundingClientRect()
-      // 网格内的坐标：offsetLeft/offsetTop 就是相对网格的，省得每张都跟视口换算
-      const px = x - origin.left
-      const py = y - origin.top
-
+      // 网格内的坐标：offsetLeft/offsetTop 就是相对网格的，省得每张都跟视口换算。
       // 被拖的那张也算进来：它是 visibility: hidden，格子还占着，几何上它是个真格子
       const cells = [...grid.querySelectorAll('.subject-card')].map((el) => ({
         uid: el.dataset.uid,
@@ -499,59 +441,17 @@ export default {
         width: el.offsetWidth,
         height: el.offsetHeight,
       }))
-      if (!cells.length) return null
-
-      // 行按顶边归并，同一行取最高的当行高（有科目挂了附加科目名，卡片高度不一样）
-      const rowTops = [...new Set(cells.map((c) => c.top))].sort((a, b) => a - b)
-      const rowHeight = (top) =>
-        Math.max(...cells.filter((c) => c.top === top).map((c) => c.height))
-      // 列宽一律相等（grid 用的 minmax(210px, 1fr)），量第一张的宽度就够
-      const colLefts = [...new Set(cells.map((c) => c.left))].sort((a, b) => a - b)
-      const colWidth = cells.find((c) => c.left === colLefts[0]).width
-
-      // 指针落在哪一行、哪一列。空隙里就近取一个，免得边界上来回跳
-      const row = nearestBand(py, rowTops.map((top) => ({ start: top, size: rowHeight(top) })))
-      const col = nearestBand(px, colLefts.map((left) => ({ start: left, size: colWidth })))
-
-      const rowCells = cells.filter((c) => c.top === row).sort((a, b) => a.left - b.left)
-      const indexOf = (uid) => this.subjects.findIndex((s) => s.uid === uid)
-      // 下一行头一张卡片的数组下标，也就是「这一行后面」这个位置；已经是最后一行就是数组末尾
-      const nextRowIndex = () => {
-        const next = cells.filter((c) => c.top > row).map((c) => indexOf(c.uid))
-        return next.length ? Math.min(...next) : this.subjects.length
-      }
-      // 「排在某张之后」的下标，就是它右边（下一行）那张卡片的数组下标
-      const afterCell = (cell) => {
-        const next = rowCells[rowCells.indexOf(cell) + 1]
-        return next ? indexOf(next.uid) : nextRowIndex()
-      }
-
-      // 末行可能不满格，落在空着的那一列就插到行尾
-      const cell = rowCells.find((c) => c.left === col)
-      let at = nextRowIndex()
-      if (cell) {
-        at = px > cell.left + cell.width / 2 ? afterCell(cell) : indexOf(cell.uid)
-      }
-      if (at < 0) return null
-
-      // at 是「含被拖那张」的下标，插进掉它的数组要减一格
-      return at > from ? at - 1 : at
+      return hitTestCell(
+        x - origin.left,
+        y - origin.top,
+        cells,
+        this.subjects.map((subject) => subject.uid),
+        from,
+      )
     },
 
-    // 离场的卡片马上要脱离文档流（见 transitions.scss 的 .v-list-leave-active），
-    // 脱离后网格不再给它宽度、静态位置也会重排到别的格子去，淡出那一瞬看着像
-    // 「往下挪一截再消失」。这里把当前的位置和尺寸钉死，它就只在原地淡出
-    holdLeavingBox(el) {
-      const box = el.getBoundingClientRect()
-      const host = el.offsetParent
-      if (host) {
-        const hostBox = host.getBoundingClientRect()
-        el.style.left = `${box.left - hostBox.left + host.scrollLeft}px`
-        el.style.top = `${box.top - hostBox.top + host.scrollTop}px`
-      }
-      el.style.width = `${box.width}px`
-      el.style.height = `${box.height}px`
-    },
+    // 离场卡片钉在原位（实现见 utils/domHold，与首页共用同一份）
+    holdLeavingBox,
   },
 }
 </script>

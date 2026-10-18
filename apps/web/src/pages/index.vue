@@ -84,9 +84,22 @@ const HomeworkEditDialog = defineAsyncComponent({
   delay: 0,
 })
 import dataProvider from '@/utils/dataProvider'
-import { formatDayName } from '@/utils/date'
-import { getSetting, watchSettings, setSetting } from '@/utils/settings'
-import { cloneDefaultSubjects, normalizeSubjects } from '@/utils/subjects'
+import {
+  buildSegments as buildSubjectSegments,
+  storedSubjectNames as collectStoredSubjectNames,
+} from '@/utils/boardView'
+import { emptySubjectNames, hasAnyHomework } from '@/utils/boardStore'
+import { formatDayName, parseDateString, shiftDateString, toDateString } from '@/utils/date'
+import {
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  getSetting,
+  setSetting,
+  watchSettings,
+} from '@/utils/settings'
+import { dayDataKey, dayFromKey } from '@/utils/storageKeys'
+import * as subjectStore from '@/utils/subjectStore'
+import { cloneDefaultSubjects } from '@/utils/subjects'
 
 // 不在科目列表里的科目统一排在这个位置，即所有列表科目之后
 const LAST_ORDER = 9998
@@ -247,11 +260,7 @@ export default {
       return new Date()
     },
     formatDate(dateInput) {
-      const date = this.ensureDate(dateInput)
-      const year = date.getFullYear()
-      const month = String(date.getMonth() + 1).padStart(2, '0')
-      const day = String(date.getDate()).padStart(2, '0')
-      return `${year}${month}${day}`
+      return toDateString(this.ensureDate(dateInput))
     },
     getToday() {
       return new Date()
@@ -271,10 +280,13 @@ export default {
       let currentDate = today
       if (dateFromUrl) {
         if (/^\d{8}$/.test(dateFromUrl)) {
-          const year = dateFromUrl.substring(0, 4)
-          const month = dateFromUrl.substring(4, 6)
-          const day = dateFromUrl.substring(6, 8)
-          currentDate = new Date(`${year}-${month}-${day}`)
+          const parsed = parseDateString(dateFromUrl)
+          // 13 月、2 月 30 日这种不存在的日子 parseDateString 会顺手进位，
+          // 原先按 Invalid Date 回落到今天；这里用月/日复核一遍，保持原来的兜底
+          const month = Number(dateFromUrl.slice(4, 6))
+          const day = Number(dateFromUrl.slice(6, 8))
+          currentDate =
+            parsed.getMonth() === month - 1 && parsed.getDate() === day ? parsed : today
         } else {
           currentDate = new Date(dateFromUrl)
         }
@@ -290,19 +302,19 @@ export default {
     },
 
     async loadDayData() {
-      const response = await dataProvider.loadData('classworks-data-' + this.state.dateString)
-      if (response && response.success === false) {
+      const response = await dataProvider.loadData(dayDataKey(this.state.dateString))
+      if (!response.ok) {
         // NOT_FOUND 是压根没记录，读失败则是未知状态，两种都不记进 storedDates；
         // 在册的只在明确 NOT_FOUND 时才撤（比如记录已被删过）
         if (response.error?.code === 'NOT_FOUND') this.storedDates.delete(this.state.dateString)
         this.state.boardData = { homework: {} }
-      } else if (Array.isArray(response)) {
+      } else if (Array.isArray(response.data)) {
         // 旧版数组格式：内容认不出来，别记在册——不然会被当成空记录删掉
         this.state.boardData = { homework: {} }
       } else {
         this.storedDates.add(this.state.dateString)
         this.state.boardData = {
-          homework: response.homework || response || {},
+          homework: response.data.homework || response.data || {},
         }
       }
       await this.loadOtherDays()
@@ -318,20 +330,19 @@ export default {
       }
       try {
         const res = await dataProvider.loadKeys({ limit: 1000 })
-        if (!res || res.success === false || !Array.isArray(res.keys)) {
+        if (!res.ok || !Array.isArray(res.data)) {
           this.state.otherDays = []
           return
         }
-        const dates = res.keys
-          .map((key) => /^classworks-data-(\d{8})$/.exec(key)?.[1])
+        const dates = res.data
+          .map(dayFromKey)
           .filter((ds) => ds && ds > this.state.dateString)
           .sort()
         const days = []
         for (const ds of dates) {
-          const data = await dataProvider.loadData(`classworks-data-${ds}`)
-          if (!data || data.success === false) continue
-          // 旧版数组格式同样不记在册，见 loadDayData 里的说明
-          if (!Array.isArray(data)) this.storedDates.add(ds)
+          const data = await this.readStoredDay(ds)
+          if (!data) continue
+          this.storedDates.add(ds)
           days.push({ dateString: ds, homework: data.homework || {} })
         }
         this.state.otherDays = days
@@ -361,8 +372,8 @@ export default {
     // 把某一天的存档读进缓存；这天本来就没有作业就留空
     async loadOtherDay(day) {
       try {
-        const data = await dataProvider.loadData('classworks-data-' + day.dateString)
-        if (!data || data.success === false || Array.isArray(data)) return
+        const data = await this.readStoredDay(day.dateString)
+        if (!data) return
         const homework = data.homework || data
         if (homework && typeof homework === 'object') {
           day.homework = homework
@@ -373,69 +384,38 @@ export default {
       }
     },
 
-    // 存档里出现过、且确实有内容的科目（含后续日期）
-    // 同一天同一科目以预览为准，不用存档那份：正在编辑时存档还是改之前的样子，
-    // 拿存档来判就等于看不见这次编辑。正文被删空时预览值是空串，
-    // 那也是「这天它没有内容了」——不给存档让位的话，底部「点击添加作业」
-    // 那张卡片要等到完成编辑、存档真被改掉才出现
-    storedSubjectNames() {
-      const names = new Set()
-      const collect = (homework, dateString) => {
-        // 预览里的科目存档里可能还没有（那天整个记录都还没存过），
-        // 只扫存档的键会漏掉刚敲的第一个字，卡片区就长不出来
-        const keys = new Set([
-          ...Object.keys(homework || {}),
-          ...Object.keys(this.state.preview[dateString] || {}),
-        ])
-        for (const key of keys) {
-          const own = this.previewContent(dateString, key)
-          const content = own != null ? own : homework?.[key]?.content
-          if (content?.trim()) names.add(key)
-        }
-      }
-      collect(this.state.boardData.homework, this.state.dateString)
-      // laterDays 已经把预览里各天补成占位项了，跟着它走就都算到了
-      for (const day of this.laterDays) collect(day.homework, day.dateString)
-      return names
+    // 读一天的存档：读不到、读失败、旧版数组格式都算「没有可用记录」，返回 null。
+    // 旧版数组格式的内容认不出来，调用方别把它记进 storedDates，
+    // 不然会被当成空记录删掉（见 loadDayData 里的说明）
+    async readStoredDay(dateString) {
+      const response = await dataProvider.loadData(dayDataKey(dateString))
+      if (!response.ok || Array.isArray(response.data)) return null
+      return response.data
     },
 
-    // 某一天某个科目的预览正文。没有这一天的预览就返回 null，调用方据此回落到存档。
-    // 用 in 而不是真值判断：正文被删空时预览值是空串，那也得算数——
-    // 不然就会回落到存档里那份旧内容，把刚删掉的又显示出来
-    previewContent(dateString, subjectName) {
-      const day = this.state.preview[dateString]
-      if (!day || !(subjectName in day)) return null
-      return day[subjectName]
+    // 存档里出现过、且确实有内容的科目（含后续日期）。
+    // 选择逻辑见 utils/boardView.js
+    storedSubjectNames() {
+      return collectStoredSubjectNames({
+        homework: this.state.boardData.homework,
+        preview: this.state.preview,
+        dateString: this.state.dateString,
+        laterDays: this.laterDays,
+      })
     },
 
     // 同一科目的作业分块：当日在前，后续日期按日期升序，分隔线由渲染层处理。
     // 每块都带着 dateString，卡片区靠它分出「点哪块进哪一天」的可点范围
     // 正文内部用空行分段、用「# 标题」分段，详见 HomeworkGrid 的解析
     buildSegments(subjectName) {
-      const segments = []
-      const own = this.previewContent(this.state.dateString, subjectName)
-      const currentContent = own != null ? own : this.state.boardData.homework[subjectName]?.content
-      // 空白不算有作业：正文只剩空格和空行时展示板会出一张没有内容的空卡片。
-      // 口径和 storedSubjectNames 一致（那边用的是 trim）
-      if (currentContent?.trim()) {
-        segments.push({
-          dateString: this.state.dateString,
-          label: null,
-          content: currentContent,
-        })
-      }
-      for (const day of this.laterDays) {
-        const own = this.previewContent(day.dateString, subjectName)
-        const content = own != null ? own : day.homework?.[subjectName]?.content
-        if (content?.trim()) {
-          segments.push({
-            dateString: day.dateString,
-            label: this.dayName(day.dateString),
-            content,
-          })
-        }
-      }
-      return segments
+      return buildSubjectSegments({
+        subjectName,
+        homework: this.state.boardData.homework,
+        preview: this.state.preview,
+        dateString: this.state.dateString,
+        laterDays: this.laterDays,
+        dayName: this.dayName,
+      })
     },
 
     // 落盘一天，顺手清掉空壳：content 为空的科目条目直接从这天删掉，
@@ -455,19 +435,19 @@ export default {
         payload = { homework: day.homework }
       }
       // 清空的科目不留条目。直接在原对象上删，内存和落盘用的是同一份
-      for (const [name, data] of Object.entries(payload.homework)) {
-        if (!data?.content?.trim()) delete payload.homework[name]
+      for (const name of emptySubjectNames(payload.homework)) {
+        delete payload.homework[name]
       }
       this.pendingSaves.add(dateString)
       try {
-        if (Object.keys(payload.homework).length) {
-          const response = await dataProvider.saveData('classworks-data-' + dateString, payload)
-          if (response && response.success === false) throw new Error(response.error.message)
+        if (hasAnyHomework(payload.homework)) {
+          const response = await dataProvider.saveData(dayDataKey(dateString), payload)
+          if (!response.ok) throw new Error(response.error.message)
           this.storedDates.add(dateString)
         } else if (this.storedDates.has(dateString)) {
           // 这天一门作业都不剩：记录删掉，不留空壳
-          const response = await dataProvider.deleteData('classworks-data-' + dateString)
-          if (response && response.success === false) throw new Error(response.error.message)
+          const response = await dataProvider.deleteData(dayDataKey(dateString))
+          if (!response.ok) throw new Error(response.error.message)
           this.storedDates.delete(dateString)
         }
         // 保存成功不提示，静默保存
@@ -478,16 +458,10 @@ export default {
       }
     },
 
+    // 科目配置从共享存储读：读不到就保留现有清单
+    // （首次启动时现有清单本来就是默认的；翻日期时不能把已经读到的配置重置掉）
     async loadSubjects() {
-      try {
-        const subjectsResponse = await dataProvider.loadData('classworks-config-subject')
-        if (subjectsResponse && Array.isArray(subjectsResponse)) {
-          // 规整顺带补齐附加属性，旧存档里的科目也能用上多份作业和附加科目
-          this.state.availableSubjects = normalizeSubjects(subjectsResponse)
-        }
-      } catch (error) {
-        console.warn('加载科目配置失败:', error)
-      }
+      this.state.availableSubjects = await subjectStore.loadSubjects(this.state.availableSubjects)
     },
 
     // 编辑入口，key 就是科目名；对话框初始停在哪一天由 options.date 给：
@@ -542,8 +516,10 @@ export default {
 
     zoom(direction) {
       const step = 2
-      if (direction === 'up' && this.state.fontSize < 100) this.state.fontSize += step
-      else if (direction === 'out' && this.state.fontSize > 16) this.state.fontSize -= step
+      if (direction === 'up' && this.state.fontSize < FONT_SIZE_MAX)
+        this.state.fontSize += step
+      else if (direction === 'out' && this.state.fontSize > FONT_SIZE_MIN)
+        this.state.fontSize -= step
       this.state.contentStyle = { 'font-size': `${this.state.fontSize}px` }
       setSetting('font.size', this.state.fontSize)
     },
@@ -564,9 +540,7 @@ export default {
     },
 
     navigateDay(offset) {
-      const currentDate = new Date(this.state.selectedDateObj)
-      currentDate.setDate(currentDate.getDate() + offset)
-      this.handleDateSelect(currentDate)
+      this.handleDateSelect(parseDateString(shiftDateString(this.state.dateString, offset)))
     },
 
     goToday() {

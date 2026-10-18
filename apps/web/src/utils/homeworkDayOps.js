@@ -36,8 +36,9 @@ export function selectionHeadings(content, start, end) {
 }
 
 // 选区里每一行实际归哪天（去重）：有日期按日期，没日期的就是正在编辑的那天；
-// 空行跳过不算。返回日期数组，顺序按正文先后
-export function selectionDays(content, start, end, today, currentDate) {
+// 空行跳过不算。返回日期数组，顺序按正文先后。
+// 只给下面两个判断用（commonDayInSelection / hasMixedDaysInSelection），不外供
+function selectionDays(content, start, end, today, currentDate) {
   const { lines, starts } = splitLines(content)
   const days = []
   const add = (date) => {

@@ -4,15 +4,13 @@
 // 只认「# 哪天」这一层，不碰选区和面板
 // （原 homeworkPhrases.js 拆分出来，函数体原样搬运）
 
-import { parseDateString, shiftDateString } from './date'
+import { WEEKDAY_CHARS, parseDateString, shiftDateString } from './date'
 import { isBodyLine, isHeadingLine, sectionEnd, splitLines } from './homeworkText'
-
-const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 
 // 日期字符串取周几
 function weekdayOf(dateString) {
   const day = parseDateString(dateString)?.getDay()
-  return Number.isInteger(day) ? WEEKDAYS[day] : ''
+  return Number.isInteger(day) ? WEEKDAY_CHARS[day] : ''
 }
 
 const DAY_PATTERN = '(今天|明天|后天|下?周[日一二三四五六])'
@@ -236,7 +234,7 @@ export function resolveReserveDay(word, today) {
   if (word === '明天') return shiftDateString(today, 1)
   if (word === '后天') return shiftDateString(today, 2)
   const name = word.slice(-1)
-  if (!WEEKDAYS.includes(name)) return ''
+  if (!WEEKDAY_CHARS.includes(name)) return ''
   for (let offset = 1; offset <= 7; offset++) {
     const dateString = shiftDateString(today, offset)
     if (weekdayOf(dateString) === name) return dateString

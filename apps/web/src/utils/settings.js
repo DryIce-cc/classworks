@@ -4,13 +4,19 @@
 const SETTINGS_STORAGE_KEY = 'Classworks_settings'
 const SETTINGS_CHANGED_EVENT = 'classworks:settings:changed'
 
+// 字体字号的可调范围。页面上的 +/- 按钮（pages/index.vue 的 zoom）和这里的校验
+// 必须同一套数：以前按钮允许加到 100、校验却只放到 32，超过 32 的值被静默丢弃，
+// 界面上变大了、一刷新又弹回去
+export const FONT_SIZE_MIN = 16
+export const FONT_SIZE_MAX = 100
+
 // 所有配置项的定义（精简版）
 const settingsDefinitions = {
   // 字体设置（唯一保留的可配置项）
   'font.size': {
     type: 'number',
     default: 18,
-    validate: (value) => value >= 16 && value <= 32,
+    validate: (value) => value >= FONT_SIZE_MIN && value <= FONT_SIZE_MAX,
   },
   // 编辑对话框整体缩放（百分比）。只往小缩：放大不如调字体设置来得正经
   'editor.zoom': {

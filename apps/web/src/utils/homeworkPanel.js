@@ -180,6 +180,13 @@ function reserveRow(today, currentDate, scope, lit) {
   }
 }
 
+// 面板上按钮显示的字。日期按钮是 { word, date }，别的按钮就是直接一个词。
+// 面板组件和父级的 tapChip 都要用（点下去写进正文的就是这个字），
+// 放这儿一处，免得两边各留一份一模一样的实现
+export function chipLabel(chip) {
+  return typeof chip === 'string' ? chip : chip.word
+}
+
 // 面板固定四行，哪一层都正好四行，空着的位置也留着，高度才不会变来变去。
 // 起手层是 订正 / 卷 / 本 / 空；最后一层是 内容 / 收尾建议 / 预定 / 空；
 // 小标题层和选区层都只有 预定 / 空（点下去的后果不一样，但控件是同一个）

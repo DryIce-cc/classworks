@@ -1,5 +1,6 @@
 // 数据层：所有数据都存在本地 IndexedDB，无云端/同步逻辑。
-// 失败的返回值统一是 { success: false, error: { code, message } }，调用方靠 success 判成败。
+// 返回值统一是信封：成功 { ok: true, data }，失败 { ok: false, error: { code, message } }，
+// 调用方只判 ok，不必再猜这次成功返回的是数据本身、true 还是一份列表。
 import { openDB } from 'idb'
 
 const DB_NAME = 'ClassworksDB'
@@ -15,8 +16,10 @@ const initDB = () =>
     },
   })
 
+const ok = (data) => ({ ok: true, data })
+
 const formatError = (message, code = 'UNKNOWN_ERROR') => ({
-  success: false,
+  ok: false,
   error: { code, message },
 })
 
@@ -26,7 +29,7 @@ export default {
       const db = await initDB()
       const raw = await db.get('kv', key)
       if (!raw) return formatError('数据不存在', 'NOT_FOUND')
-      return JSON.parse(raw)
+      return ok(JSON.parse(raw))
     } catch (error) {
       return formatError('读取本地数据失败：' + error)
     }
@@ -36,7 +39,7 @@ export default {
     try {
       const db = await initDB()
       await db.put('kv', JSON.stringify(data), key)
-      return true
+      return ok(true)
     } catch (error) {
       return formatError('保存本地数据失败：' + error)
     }
@@ -47,7 +50,7 @@ export default {
     try {
       const db = await initDB()
       await db.delete('kv', key)
-      return true
+      return ok(true)
     } catch (error) {
       return formatError('删除本地数据失败：' + error)
     }
@@ -58,7 +61,7 @@ export default {
     try {
       const db = await initDB()
       const keys = await db.getAllKeys('kv')
-      return { keys: keys.sort().slice(0, limit) }
+      return ok(keys.sort().slice(0, limit))
     } catch (error) {
       return formatError('获取本地键名列表失败：' + error.message)
     }

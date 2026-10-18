@@ -17,6 +17,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 卡住时别干耗到 GitHub 默认的 6 小时上限
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -44,6 +46,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -21,13 +21,16 @@ export function shiftDateString(dateString, offset) {
   return toDateString(date)
 }
 
+// 周几的单字，下标就是 Date#getDay() 的返回值（0 = 周日）。
+// 解析日子词（homeworkReserve）和显示日期名都从这里取，别处不再各写一份
+export const WEEKDAY_CHARS = ['日', '一', '二', '三', '四', '五', '六']
+
 // 相对日期名（周以周一为首）：
 //   今天
 //   昨天 / 明天
 //   上周三 / 本周五 / 下周三
 //   9月10日（星期四）
 export function formatDayName(dateString) {
-  const weekdaysShort = ['日', '一', '二', '三', '四', '五', '六']
   const target = parseDateString(dateString)
   if (isNaN(target.getTime())) return ''
   const now = new Date()
@@ -43,7 +46,7 @@ export function formatDayName(dateString) {
   }
   const weekOffset = Math.round((mondayStart(target) - mondayStart(today)) / (7 * dayMs))
 
-  const short = weekdaysShort[target.getDay()]
+  const short = WEEKDAY_CHARS[target.getDay()]
   const md = `${target.getMonth() + 1}月${target.getDate()}日`
 
   if (diff === 0) return '今天'

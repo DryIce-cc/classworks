@@ -44,3 +44,31 @@ export function normalizeSubjects(list) {
 export function cloneDefaultSubjects() {
   return normalizeSubjects(DEFAULT_SUBJECTS)
 }
+
+// 会话内递增的 uid：给视图模型当身份标识用。
+// 它只在这次会话里有效，不落盘，刷新页面重新编号
+let uidSeq = 0
+export const nextSubjectUid = () => `subject-${++uidSeq}`
+
+// 存档形状 → 视图模型：补默认字段、补 uid。
+// uid 只在本次会话内用于拖拽身份（v-for 的 key、卡片上的 data-uid），不进存档；
+// 名字在这里去空白并补占位名，免得一份空科目名存档以后每次存都写空
+export function toViewSubjects(list) {
+  return list.map((subject) => ({
+    name: String(subject?.name ?? '').trim() || '未命名',
+    multiHomework: !!subject?.multiHomework,
+    extraSubjects: [...(subject?.extraSubjects || [])],
+    uid: nextSubjectUid(),
+  }))
+}
+
+// 视图模型 → 存档形状：顺序就是数组下标，存盘时按位置重算 order，
+// 少一个会和人手改的 order 打架的字段；uid 是内存里的东西，不能进存档
+export function toStoredSubjects(list) {
+  return list.map((subject, index) => ({
+    name: subject.name,
+    order: index,
+    multiHomework: !!subject.multiHomework,
+    extraSubjects: [...(subject?.extraSubjects || [])],
+  }))
+}

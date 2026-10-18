@@ -102,8 +102,7 @@
                  它自己用 Decoration 藏起来、画到左边的 gutter 上，没有第二份正文。
                  外面改 content 就调它的 setValue，用户在里面打字就回写 content，
                  编号的收尾（认手敲的 N.、补号、重排）全在编辑器那边走完。
-                 两边的位置是同一套（编辑器里就是 content 的偏移），
-                 只有走「摘掉编号那份正文」的老口径时才需要 bodyToContent / contentToBody -->
+                 两边的位置是同一套（编辑器里就是 content 的偏移） -->
             <div class="hw-area">
               <homework-editor
                 ref="editorRef"
@@ -138,51 +137,7 @@
 
             <!-- 推荐面板：就在左栏里、文本框正下方，和文本框同宽，不再横铺到右边键位下面。
                  固定高度（.phrase-panel 写死了），写字时编辑框不会上下跳 -->
-            <div class="phrase-panel">
-              <div
-                v-for="(row, ri) in panel"
-                :key="ri"
-                class="phrase-row"
-                :class="{ 'phrase-row-affix': row.prefix || row.suffix }"
-              >
-                <!-- 「作为」「的作业」是固定文字，不是按钮。面板换层时这两个会时有时无，
-                     直接跟着 v-show 的 display 切换出现／消失，不做淡入淡出：
-                     它们是常驻的小标签，每换一层就淡一下反而晃眼 -->
-                <span v-show="row.prefix" class="phrase-affix phrase-affix-prefix">{{ row.prefix }}</span>
-                <div class="phrase-chips">
-                  <div v-for="(group, gi) in row.groups" :key="gi" class="phrase-group">
-                    <v-chip
-                      v-for="chip in group"
-                      :key="chipLabel(chip)"
-                      class="ma-1 phrase-chip"
-                      :variant="chipVariant(row, chip)"
-                      :class="{ 'phrase-chip-on': isChipLit(row, chip) }"
-                      @mousedown.prevent
-                      @click="tapChip(chip, row)"
-                    >
-                      {{ chipLabel(chip) }}
-                    </v-chip>
-                  </div>
-                  <!-- 「正面/反面」后头那个换行（见 panelRows 里的 newline）。
-                       词条是补字，这个是断句，用 flat + primary 跟它们分开；
-                       ma-1 和 chip 的间距对齐，height 也照 chip 的 32px，
-                       免得这一行比别行长出一截 -->
-                  <v-btn
-                    v-if="row.newline"
-                    class="ma-1 phrase-newline"
-                    color="primary"
-                    rounded="pill"
-                    size="small"
-                    variant="flat"
-                    @mousedown.prevent
-                    @click="startNextItem"
-                  >
-                    下一行
-                  </v-btn>
-                </div>
-                <span v-show="row.suffix" class="phrase-affix phrase-affix-suffix">{{ row.suffix }}</span>
-              </div>
-            </div>
+            <homework-phrase-panel :rows="panel" @tap="tapChip" @next-line="startNextItem" />
 
           </div>
 
@@ -190,172 +145,21 @@
                竖直却不在这一栏内，它脱开文档流落到视口中线上，见 .numeric-keypad。
                横向不靠算坐标：fixed 不写 left 时落在自己的静态位置上，
                静态位置照这一栏的 flex 排版算，还是原来那个左边 -->
-          <div class="quick-tools ml-4" style="min-width: 156px" @contextmenu.prevent>
-            <div class="numeric-keypad">
-              <!-- 数字按 789 / 456 / 123 从上往下排：跟电话和计算器一个方向，
-                   拇指往上够到的第一排是最大的那几个 -->
-              <div class="keypad-row">
-                <v-btn
-                  v-for="n in [7, 8, 9]"
-                  :key="n"
-                  class="keypad-btn"
-                  variant="tonal"
-                  @mousedown.prevent
-                  @click="insertAtCursor(String(n))"
-                >
-                  {{ n }}
-                </v-btn>
-              </div>
-              <div class="keypad-row">
-                <v-btn
-                  v-for="n in [4, 5, 6]"
-                  :key="n"
-                  class="keypad-btn"
-                  variant="tonal"
-                  @mousedown.prevent
-                  @click="insertAtCursor(String(n))"
-                >
-                  {{ n }}
-                </v-btn>
-              </div>
-              <div class="keypad-row">
-                <v-btn
-                  v-for="n in [1, 2, 3]"
-                  :key="n"
-                  class="keypad-btn"
-                  variant="tonal"
-                  @mousedown.prevent
-                  @click="insertAtCursor(String(n))"
-                >
-                  {{ n }}
-                </v-btn>
-              </div>
-              <!-- 这一行：中间是 0，左右两格按光标前面停在哪换（见 contextKeys）。
-                   0 在中间是跟着上面 789/456/123 的习惯来：三列的键盘里 0 都在
-                   最下面那一排的中间，两边对称，手不用偏 -->
-              <div class="keypad-row">
-                <v-btn
-                  class="keypad-btn vis-fade"
-                  size="small"
-                  :class="{ 'vis-fade-off': !padKeys[0] }"
-                  variant="tonal"
-                  @mousedown.prevent
-                  @click="insertAtCursor(padKeys[0])"
-                >
-                  {{ padKeys[0] }}
-                </v-btn>
-                <v-btn
-                  class="keypad-btn"
-                  variant="tonal"
-                  @mousedown.prevent
-                  @click="insertAtCursor('0')"
-                >
-                  0
-                </v-btn>
-                <v-btn
-                  class="keypad-btn vis-fade"
-                  size="small"
-                  :class="{ 'vis-fade-off': !padKeys[1] }"
-                  variant="tonal"
-                  @mousedown.prevent
-                  @click="insertAtCursor(padKeys[1])"
-                >
-                  {{ padKeys[1] }}
-                </v-btn>
-              </div>
-<div class="keypad-row">
-                <!-- 按住连删：延迟和重复速度都照 Windows 键盘的默认值，
-                     见 HOLD_REPEAT_DELAY / HOLD_REPEAT_INTERVAL 的注释。
-
-                     起始挂在 pointerdown 上，不能挂 mousedown：触屏上 mousedown
-                     是在 pointerup 之后才合成出来的，挂在它上面的话，抬手那一下
-                     已经过去了，连删收不回来——不光是连删，光点一下也会开始删。
-                     鼠标上 mousedown 早于 pointerup，所以那条路一直没暴露出来。
-                     按下就删第一下，抬手（window 捕获阶段）收住连删，
-                     整条路只有这一个入口 —— 少挂一个 @click 的话单点就不删了 -->
-                <v-btn
-                  class="keypad-btn"
-                  color="error"
-                  variant="tonal"
-                  title="删除"
-                  aria-label="删除"
-                  @mousedown.prevent
-                  @pointerdown="startHoldRepeat"
-                >
-                  <!-- 图标放默认插槽里，不用 icon 属性：icon 会强制成圆形，和旁边的键位对不上 -->
-                  <v-icon icon="mdi-backspace-outline" size="small" />
-                </v-btn>
-                <v-btn
-                  class="keypad-btn keypad-word"
-                  size="small"
-                  :variant="canEndLine ? 'flat' : 'tonal'"
-                  :color="canEndLine ? 'primary' : undefined"
-                  @mousedown.prevent
-                  @click="startNextItem"
-                >
-                  {{ atSectionStart ? '分段' : '换行' }}
-                </v-btn>
-                <!-- 停在行首时空格没意义（顶头补空格只是个前导空格），
-                     那一格改成「这一行是不是小标题」。# 不再是一个塞进正文的字，
-                     而是编号栏那一格的记号：切过去 = 变成小标题，再按一下变回普通行。
-                     两边对得上：左边点一下摘 #，这边按一下摘 # -->
-                <v-btn
-                  class="keypad-btn keypad-word"
-                  size="small"
-                  variant="tonal"
-                  @mousedown.prevent
-                  @click="caretAtLineStart ? toggleHeading() : insertAtCursor(' ')"
-                >
-                  {{ caretAtLineStart ? '#' : '空格' }}
-                </v-btn>
-              </div>
-
-              <!-- 量词。刚敲完一个数才淡进来，平时淡出去藏着，但这一排的位置一直留着：
-                   键位整块是脱开文档流、按视口中线摆的（见 .numeric-keypad），
-                   量词一出现一消失，小键盘高度就跟着变，整块键位在视口里上下一跳。
-                   淡入淡出走通用那套 visibility 切换（.vis-fade），高度一点不动 -->
-              <div class="measure-row vis-fade" :class="{ 'vis-fade-off': !showBottomKeys }">
-                <v-btn
-                  v-for="key in bottomKeys"
-                  :key="key"
-                  class="measure-btn"
-                  size="small"
-                  variant="text"
-                  @mousedown.prevent
-                  @click="insertAtCursor(key)"
-                >
-                  {{ key }}
-                </v-btn>
-              </div>
-
-              <!-- 粘贴按钮：跟着键位整块飘，横着在量词下面居中（见 .paste-bar）。
-                   原来它在左栏、正文和推荐面板之间，现在跟键位并排放在右栏，
-                   键位和粘贴都是「整块往正文里加字」的，一起摆一起按更顺手 -->
-              <div class="paste-bar">
-                <v-btn
-                  size="small"
-                  variant="outlined"
-                  prepend-icon="mdi-content-paste"
-                  @mousedown.prevent
-                  @click="pasteFromClipboard"
-                >
-                  粘贴
-                </v-btn>
-                <!-- @mousedown.prevent 不能少：这一下失败时面板还开着（剪贴板读不到、
-                     或者剪贴板是空的），焦点要留在编辑框里接着写，不被按钮抢走 -->
-                <v-btn
-                  size="small"
-                  variant="elevated"
-                  color="primary"
-                  prepend-icon="mdi-content-paste"
-                  @mousedown.prevent
-                  @click="pasteAndComplete"
-                >
-                  粘贴并完成
-                </v-btn>
-              </div>
-            </div>
-          </div>
+          <homework-keypad
+            :bottom-keys="bottomKeys"
+            :show-bottom-keys="showBottomKeys"
+            :pad-keys="padKeys"
+            :can-end-line="canEndLine"
+            :at-section-start="atSectionStart"
+            :caret-at-line-start="caretAtLineStart"
+            @insert="insertAtCursor"
+            @paste="pasteFromClipboard"
+            @paste-and-complete="pasteAndComplete"
+            @next-line="startNextItem"
+            @toggle-heading="toggleHeading"
+            @hold-start="startHoldRepeat"
+            @hold-stop="stopHoldRepeat"
+          />
         </div>
       </v-card-text>
     </v-card>
@@ -367,39 +171,28 @@
        Teleport 到 body 是必须的——Vuetify 自己的浮层容器上带 transform，
        position: fixed 在那样的祖先里会退化成 absolute，跟着卡片一起缩。
        数值记在应用设置里（editor.zoom），下回打开还是这个大小 -->
-  <Teleport to="body">
-    <Transition name="fade">
-      <div v-if="dialogVisible" class="editor-zoom" title="编辑框缩放" @mousedown.prevent @contextmenu.prevent>
-        <v-slider
-          :model-value="editorZoom"
-          :min="zoomMin"
-          :max="zoomMax"
-          :step="5"
-          density="compact"
-          hide-details
-          class="editor-zoom-slider"
-          aria-label="编辑框缩放"
-          @update:model-value="setEditorZoom"
-        >
-          <template #label>
-            <span class="editor-zoom-value">{{ editorZoom }}%</span>
-          </template>
-        </v-slider>
-      </div>
-    </Transition>
-  </Teleport>
+  <editor-zoom-bar
+    :visible="dialogVisible"
+    :value="editorZoom"
+    :min="zoomMin"
+    :max="zoomMax"
+    @update:value="setEditorZoom"
+  />
 </template>
 
 <script>
 import HomeworkEditor from '@/components/HomeworkEditor.vue'
+import HomeworkKeypad from '@/components/home/HomeworkKeypad.vue'
+import HomeworkPhrasePanel from '@/components/home/HomeworkPhrasePanel.vue'
+import EditorZoomBar from '@/components/home/EditorZoomBar.vue'
 import dataProvider from '@/utils/dataProvider'
+import { dayDataKey } from '@/utils/storageKeys'
 import { getSetting, setSetting, watchSettings } from '@/utils/settings'
 import { formatDayName, parseDateString, shiftDateString, toDateString } from '@/utils/date'
-import { BOTTOM_KEYS, contextKeys, hasContent, hints, panelRows } from '@/utils/homeworkPanel'
+import { BOTTOM_KEYS, chipLabel, contextKeys, hasContent, hints, panelRows } from '@/utils/homeworkPanel'
 import {
   assembleDayContent,
   findDayBlockEnd,
-  HEADING_PREFIX,
   headingTitleStart,
   isPlainReserveHeading,
   parseReservations,
@@ -427,7 +220,6 @@ import {
   positionAt,
   renumberAll,
   renumberContent,
-  settleEdit,
   splitContent,
 } from '@/utils/homeworkList'
 import {
@@ -507,7 +299,7 @@ function dropHeadingLine(content, ownerStart) {
 
 export default {
   name: 'HomeworkEditDialog',
-  components: { HomeworkEditor },
+  components: { HomeworkEditor, HomeworkKeypad, HomeworkPhrasePanel, EditorZoomBar },
   props: {
     modelValue: {
       type: Boolean,
@@ -1137,6 +929,9 @@ export default {
         // 跟往目标日追加一段没关系，跟着走就会凭空多出一个空行。
         // 编号按目的地那一节重排一遍：搬过去的是别处的行，编号得跟着新位置来，
         // 不然目标日里会并着两个 1.
+        // 这段拼装和 buildPreviewPayload 那处逐字相同，但两边的 base 不同：
+        // 这里取的是该日草稿/存档原样（可能还带着那天自己的预定标记），预览那边
+        // 传的是剥掉标记并重排过编号的正文，语义不一致，所以没有抽成公共方法
         const content = this.padTrailingBlankLines(
           renumberContent(tidyBlankLines(assembleDayContent(await this.ensureBase(dateString), list))),
           DEFAULT_BLANK_LINES
@@ -1164,8 +959,10 @@ export default {
     // 在这儿理掉，末尾的空行才是我们自己按份数留的
     async readStoredDay(dateString) {
       try {
-        const data = await dataProvider.loadData('classworks-data-' + dateString)
-        if (data && data.success !== false) return (data.homework?.[this.title]?.content || '').trim()
+        const response = await dataProvider.loadData(dayDataKey(dateString))
+        if (response.ok) {
+          return (response.data?.homework?.[this.title]?.content || '').trim()
+        }
       } catch (error) {
         console.error('读取作业失败:', error)
       }
@@ -1197,6 +994,9 @@ export default {
           // 当前正文置成 rest 再取底稿，所以没这个问题，这里对齐它
           const base =
             payload[dateString] != null ? payload[dateString] : await this.ensureBase(dateString)
+          // 这段拼装和 settleReservations 那处逐字相同，但 base 语义不同：这里传入的是
+          // 剥掉该日预定标记并重排过编号的正文，那边传的是该日草稿/存档原样（标记可能还在），
+          // 所以没有抽成公共方法
           payload[dateString] = this.padTrailingBlankLines(
             renumberContent(tidyBlankLines(assembleDayContent(base, list))),
             DEFAULT_BLANK_LINES
@@ -1318,25 +1118,10 @@ export default {
       return nl < 0 ? content.length : nl
     },
 
-    // 按钮上显示的字。日期按钮是 { word, date }，别的按钮就是直接一个词
-    chipLabel(chip) {
-      return typeof chip === 'string' ? chip : chip.word
-    },
-    // 该亮的按钮垫一层，当选中。不是强调色——拿主题的文字色垫一层，深浅色都跟得住。
-    // 光靠 variant="flat" 不够：浅色主题下那层底色几乎看不出来
-    chipVariant(row, chip) {
-      if (this.isChipLit(row, chip)) return 'flat'
-      return row.reserve ? 'outlined' : 'text'
-    },
-    // 这个按钮是不是当前该亮的那个目标日期。按日期比不按字比——
-    // 用户写「周三」，该亮的是写着「下周二」那个按钮
-    isChipLit(row, chip) {
-      return !!chip.date && !!row.lit?.includes(chip.date)
-    },
     // 面板上点一个词：只往光标处写这几个字。
     // 「作为…的 xx」那一栏点的后果看光标在哪、有没有多选，在 chooseDay 里分派
     tapChip(chip, row) {
-      const word = this.chipLabel(chip)
+      const word = chipLabel(chip)
       if (row?.reserve) {
         this.chooseDay(word, chip.date)
         return
@@ -1487,7 +1272,7 @@ export default {
         : this.currentLineStart + headingTitleStart(next) + offsetInName
       const lineEnd = this.currentLineStart + next.length
       if (/^\n[ \t　]*(\n|$)/.test(this.content.slice(lineEnd))) caret = lineEnd + 1
-      this.$nextTick(() => this.restoreLineCaret(caret))
+      this.$nextTick(() => this.placeBodyCaret(caret))
     },
     // 小标题下面只有光标这一行：直接改那个标题，不另开一节。光标仍停在正文那一行
     retitleOwner(ownerStart, day, strip) {
@@ -1509,7 +1294,7 @@ export default {
       this.content = this.content.slice(0, ownerStart) + next + this.content.slice(end)
       // 标题变长了，正文那一行跟着往后挪
       const caret = ownerStart + next.length + 1 + column
-      this.$nextTick(() => this.restoreLineCaret(caret))
+      this.$nextTick(() => this.placeBodyCaret(caret))
     },
     // 预定：把光标所在这一行摘下来，挪到那天「的作业」那一节的最后接着写。
     // 那天还没有这一节就在末尾新起一节；已经有了就接在已有内容后面。
@@ -1610,7 +1395,7 @@ export default {
       this.commitNumber(this.currentLineIndex, before)
       this.settleNumbers()
       const caret = this.caretAfterInsert(before, at, insert)
-      this.$nextTick(() => this.restoreLineCaret(caret))
+      this.$nextTick(() => this.placeBodyCaret(caret))
     },
     // 改完正文之后光标该落回哪儿。补号会让这一行整体往后挪（前面多了「N. 」），
     // 光拿改动前的字符偏移放回去会落进编号里／落在词前面，所以按「第几行第几个字」
@@ -1653,7 +1438,7 @@ export default {
     },
     // 把编辑器的值和光标一起摆正。position 是 content 里的偏移，
 // 编辑器的 doc 就是 content，两个坐标系是同一套，不用换算
-placeBodyCaret(at, to = at) {
+    placeBodyCaret(at, to = at) {
       const editor = this.getEditor()
       if (!editor) return
       editor.focus?.()
@@ -1661,16 +1446,6 @@ placeBodyCaret(at, to = at) {
       editor.setValue(this.content, { anchor: at, head: to })
       this._programmatic = false
       this.updateCurrentLine()
-    },
-    // 正文位置 → 输入框位置再摆正
-    placeCaret(from, to = from) {
-      this.placeBodyCaret(from, to)
-    },
-    // 改完正文重新定位光标：聚焦 + 落到指定位置 + 把当前行刷新一遍。
-    // position 是正文里的位置，落进输入框之前要换算（那边没有编号）。
-    // DOM 要等 Vue 渲染完才能动，所以调用方一律包在 $nextTick 里
-    restoreLineCaret(position) {
-      this.placeCaret(position)
     },
     // 正文动过之后，把「光标在末尾那一行」这件事记下来给面板看。
     // 这时候 DOM 还没跟上（value 要等 Vue 渲染完才更新），摸 DOM 读到的是旧值，
@@ -1711,7 +1486,7 @@ placeBodyCaret(at, to = at) {
     settleNumbers() {
       const map = this.listMap
       const numbers = map.numbers.slice()
-      settleEdit(map.texts, numbers)
+      renumberAll(map.texts, numbers)
       const next = joinContent(map.texts, numbers)
       if (next === this.content) return
       this.content = next
@@ -1772,7 +1547,7 @@ placeBodyCaret(at, to = at) {
       const to = lineColumn(map, range?.to ?? range?.from ?? end)
       this.$nextTick(() => {
         const after = this.listMap
-        this.placeCaret(
+        this.placeBodyCaret(
           positionAt(after, from.line, from.column),
           positionAt(after, to.line, to.column),
         )
@@ -1964,19 +1739,6 @@ placeBodyCaret(at, to = at) {
   min-width: 0;
 }
 
-/* 粘贴按钮：在键位整块的最下面，跟量词那一排一起飘（容器见 .numeric-keypad）。
-   两个横着摆，整行 189 宽（71.75 + 8 + 108.95），比这一栏的 180 宽出一丁点。
-   不缩它——缩了字就挤；让它按自己的宽度摆，靠 justify-content: center
-   落在键位正中，左右各探出去 4.35px。
-   键位自己的横向位置不受影响（它脱开文档流，left 是 auto） */
-.paste-bar {
-  display: flex;
-  flex-direction: row;
-  justify-content: center;
-  align-items: center;
-  gap: 8px;
-}
-
 /* 编辑框所在那一栏（编辑框 + 推荐面板）。
    min-width 缺省是 auto，也就是「不许比内容还窄」——推荐面板最后一行的小标题名
    是不换行的（超了要出省略号），标题名一长就等于告诉这一栏「你至少这么宽」，
@@ -1986,247 +1748,10 @@ placeBodyCaret(at, to = at) {
   min-width: 0;
 }
 
-/* 推荐面板：收在左栏里、文本框正下方，只撑满文本框那一列（右边缘对齐文本框的右边），
-   不再横铺到小键盘下面去。
-   高度写死，编辑框就不会被面板顶得上下跳——三层词表轮着上，
-   每一层有几行按钮还不一样，不写死的话打字时编辑框会跟着上下跳。
-   三行词（一行 chip 32px 加 ma-1 的 4px，上下共 40px）+ 两个 2px 的间隙，
-   再留 2px 余量。写多了底下就空在那儿，看着像还该有点什么。
-   两条跟外面有关联的改动：
-     往右多铺出小键盘那一列。面板本来就在键位下方，两者纵向基本不重叠，
-     这段宽度是真能用的；铺不出的话那些词就得折行，一折行面板就变高、
-     对话框跟着长高、滚动条冒出来。伸到键位底下的那段由 .numeric-keypad 的底色盖住，
-     那里真有重叠时也不漏字。负外边距把多铺的那段抵掉，这一栏的排版一点不变
-     （编辑框的宽度照旧由右边那栏决定，恒定不变）
-   min-height 而不是 height：词多到一行放不下时，面板按内容的行数长高，
-   而不是让多出来的行掉到框外——掉出去的那些字要么被卡片切掉，要么逼得对话框滚动。
-   平常一行放得下一行时它还是 126，编辑框照样不会上下跳 */
-.phrase-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
-  width: calc(100% + var(--keypad-space));
-  margin-right: calc(-1 * var(--keypad-space));
-  min-height: 126px;
-  gap: 2px;
-  margin-top: 4px;
-}
-
-.phrase-row {
-  display: flex;
-  align-items: flex-start;
-  align-self: stretch;
-  width: 100%;
-  min-width: 0;
-  flex: 0 0 auto;
-}
-
-.phrase-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-/* 一组词。组只是折行的单位，不表示分组——所有按钮的间距一样，靠 chip 自己的 ma-1。
-   组内自己也折行，「明天上课对答案」这种长句才不会被挤出面板 */
-.phrase-group {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-/* 有前缀/后缀文字的那一行（「作为 … 的作业」）：词只占它自己那么宽，
-   后缀紧跟在词后面，不推到行的最右边去。
-   空间不够时也不许压缩词：整行的收缩量全给后缀，让它截成省略号 */
-.phrase-row-affix .phrase-chips {
-  flex: 0 0 auto;
-}
-
-/* 「正面/反面」后头那个换行按钮。词条是补字、这个是断句，所以配色上挑明：
-   primary + flat，一眼就看出不是往正文里加字的。
-   高度照词条那个 32px，这一行才跟别行一样高（词条是 32 + ma-1 的 4）；
-   字号也照词条——v-btn 按 size="small" 压到 0.75rem，比 chip 的 0.875rem 小一号，
-   并排摆着大小不齐。圆角走 rounded="pill"（9999px，两头圆），
-   别用 rounded="circle"：那个是 50%，长短不一的按钮上就成了椭圆 */
-.phrase-newline {
-  min-height: 32px;
-  padding: 0 12px;
-  font-size: 0.875rem;
-}
-
-/* 「作为」「的作业」这类固定文字，不是按钮。面板换层时它们时有时无，
-   直接跟着 display 切换出现／消失就好，不做淡入淡出——这两个词是常驻的小标签，
-   每换一层就淡一下反而晃眼。span 常驻 DOM（v-show），只切 display */
-.phrase-affix {
-  flex: 0 0 auto;
-  align-self: center;
-  padding: 0 2px;
-  font-size: 0.85rem;
-  line-height: 1.5;
-  opacity: 0.7;
-}
-
-/* 前缀（「作为」）要和上面两行的按钮左对齐。按钮那个字的起点是 ma-1 的
-   4px 外边距加 chip 默认档左右各 12px 的内边距，这里让出同样的一截 */
-.phrase-affix-prefix {
-  margin-left: 4px;
-  padding-left: 12px;
-}
-
-/* 后缀（「的作业」）允许被挤窄：词排满一行时它不能顶出面板，
-   宁可自己截成省略号。min-width:0 是 flex 项能缩到内容宽度以下的开关 */
-.phrase-affix-suffix {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 :deep(.v-chip) {
   cursor: pointer;
   user-select: none;
 }
 
-/* 键位之间的间距，横竖一律用这一个值：行与行靠 .numeric-keypad 的 gap，
-   一行之内靠各网格自己的 gap，两者都取它，不会一处宽一处窄。
-   小键盘那一栏：横着的位置由它占住（宽度给 180，编辑框的宽度才不会跟着变宽）。
-   竖直方向它已经不管键位了——键位脱开文档流落到视口中线，见 .numeric-keypad。
-   align-items: center 留着：脱开文档流的键位没写 left，浏览器按这一栏的对齐方式
-   定它的静态位置，键位就还贴在原来那个左边，别以为它没用了就删 */
-.quick-tools {
-  --key-gap: 4px;
-  border-left: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-/* 竖直落在视口中线上：fixed + top:50% + 往上挪回自己一半高。
-   50% 是按谁算的：Vuetify 的 .v-overlay__content 带 contain: layout，
-   fixed 的包含块就是它（也就是对话框那个盒子），而对话框永远上下居中摆在视口里，
-   所以那个盒子的中线就是视口的中线，键位落点正好在视口中线。
-   别改成 top: 50vh——vh 量的是视口，可起点仍是包含块的左上角，会整体偏高半个视口。
-   横向一个字都不写：left、right 都是 auto 时 fixed 落在静态位置上，静态位置照
-   .quick-tools 的 flex 排版算，不用算坐标（实测 700/900/1440 三种宽度，一个像素没动过）。
-   窄到这一行比卡片还宽时（视口不足 ~465px，本来就在溢出、右边那列键位被切掉），
-   左栏的固有宽度是顶宽的那几件东西撑出来的，粘贴按钮搬走之后它窄了二十几像素，
-   键位跟着左移一点——那边本来就是坏的，不在这条规则的射程内。
-   不垫底色：推荐面板已经收进左栏（见 .phrase-panel），键位整块不再压着它，
-   底下透出来的就是卡片自己的底色，不用再盖一层 */
-/* 键位底下垫的那一层底色，等于把这一块「擦」回卡片自己的样子。
-   键位是 fixed，压在文字上面，键与键之间的缝本来会漏出底下的字；
-   推荐面板现在往这一列底下伸（见 .phrase-panel），漏字的机会更多了。
-   取色就用卡片自己的底色（v-theme-surface），换主题它跟着变。
-   z-index:-1 是关键：这一层要压在键位底下，别把键位盖了。
-   fixed 的元素自成一个层叠上下文，这一层就只在自己这层里排在内容后面。
-   左右各多垫 8px：粘贴那一行比键位整块还宽一点（见 .paste-bar），
-   刚好盖住它探出来的那两截 */
-.numeric-keypad::before {
-  content: '';
-  position: absolute;
-  top: -4px;
-  bottom: -4px;
-  left: -8px;
-  right: -8px;
-  background: rgb(var(--v-theme-surface));
-  z-index: -1;
-}
-
-.numeric-keypad {
-  /* 键位整块多宽。键宽是这个数减掉两条 --key-gap 再三等分来的（见 .keypad-row），
-     想让键窄一点就改这里，间距一个字不动 */
-  width: 156px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--key-gap);
-  position: fixed;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-/* 小键盘整列：每一行都是同一个三列网格，按钮尺寸只由网格决定，
-   所以没有任何按钮自带宽度 */
-.keypad-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  /* 横竖都用这一个间距：键与键、键与行透出同样宽的一条底色。
-     键变窄是靠 .numeric-keypad 收窄整块来的，不是靠加大这个间距——
-     间距一大，键就宽了，等于没变窄 */
-  gap: var(--key-gap);
-}
-
-.keypad-btn {
-  width: 100%;
-  min-width: 0;
-}
-
-/* 换行、空格：两个汉字挤在数字键那么宽的一格里，字号比数字键小一号才匀。
-   size="small" 本来就是 0.75rem，这里写死是免得改尺寸时跟着一起变 */
-.keypad-word {
-  font-size: 0.75rem;
-}
-
-/* 量词那一排。五个键对不上三列，所以自己一行、均分整行，
-   硬凑进上面那个网格只会让键宽一会儿宽一会儿窄 */
-.measure-row {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: var(--key-gap);
-}
-
-/* 量词上的字跟自动建议区的 chip 一样大（chip 默认档是 0.875rem，
-   v-btn 按 size="small" 把它压到 0.75rem，这里改回来，两个区域看齐）。
-   五个键分那一百八十来 px，一格三十几，v-btn 默认左右各 12px 的内边距
-   会把字挤出去，所以一并收窄 */
-.measure-btn {
-  width: 100%;
-  min-width: 0;
-  min-height: 34px;
-  padding: 0 2px;
-  font-size: 0.8rem;
-}
-/* 缩放条。整块钉在视口右下角，teleport 到 body（见模板里那段注释）——
-   它管的是视口，不是卡片，卡片缩了它不能跟着缩。
-   z-index 压在对话框浮层之上：对话框打开时它得能看见、能拖。
-   刻意不给底色：整页本来就暗，一条没有底的细滑块贴着右下角就够了，
-   加个底反而像多出来一块东西。淡入淡出走通用那套 .fade-*（见 transitions.scss） */
-.editor-zoom {
-  position: fixed;
-  /* 右边距连滚动条那条槽一起让开：html 上 scrollbar-gutter: stable 给滚动条
-     常驻预留了一条槽（见 styles/global.scss），fixed 的包含块是视口减掉这条槽，
-     而 100vw 含槽，两者之差正好是槽宽。没滚动条时差为 0，位置照旧 */
-  right: calc(16px + (100vw - 100%));
-  bottom: 16px;
-  z-index: 2600;
-  width: 132px;
-  /* 左右各留出半个拇指的位置：Vuetify 把拇指中心压在轨道两端，拇指会往外探出
-     半个（约 10px）。不留的话滑到 100% 时拇指尖探到条外，正好被右下角那条
-     滚动条压住。宽度走 border-box，留白从内容里让，条本身还是 132 */
-  padding-inline: 10px;
-}
-
-.editor-zoom-slider {
-  width: 100%;
-}
-
-/* 去掉 Vuetify 横向 slider 自带的 margin-inline:8px：它会把滑轨往右顶出 8px，
-   拇指跟着再往右探 8px，上面那圈留白就白留了。选择器带上 .v-slider 提一档权重，
-   跟 Vuetify 组件样式谁先加载无关 */
-.editor-zoom-slider.v-slider {
-  margin-inline: 0;
-}
-
-/* 百分比摆在滑块上，不是旁边另写一行。
-   摆旁边的话数字一变宽（60% → 100%）滑轨就被挤短一截，
-   滑到头的时候拇指会跟着跳一下，所以宽度给它定死 */
-.editor-zoom-value {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.7;
-}
 </style>
 
