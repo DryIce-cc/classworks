@@ -2,9 +2,10 @@
   <v-dialog
     v-model="dialogVisible"
     :fullscreen="false"
-    width="700"
-    max-width="calc(100vw - 48px)"
+    :width="dialogBaseWidth"
+    :max-width="dialogMaxWidth"
     content-class="homework-dialog-content"
+    :content-props="{ style: dialogZoomStyle }"
     persistent
   >
     <v-card class="hw-card" border>
@@ -93,18 +94,28 @@
               </v-btn>
             </div>
 
-            <v-textarea
-              ref="inputRef"
-              v-model="content"
-              auto-grow
-              rows="5"
-              class="hw-area"
-              @click="scheduleCurrentLine"
-              @keyup="updateCurrentLine"
-              @input="updateCurrentLine"
-              @mouseup="scheduleCurrentLine"
-              @select="updateCurrentLine"
-            />
+            <!-- 值是摘掉编号的那一份正文：编号画在左边的编号栏上（见 buildGutterHtml），
+                 悬挂对齐就是那条栏给的。输入框里的位置和正文里的位置差着前面若干个
+                 编号的长度，往返换算走 bodyToContent / contentToBody，别直接拿来用。
+                 改动一律走 onBodyInput：那里才把输入框并回正文，顺手认下新敲出来的编号 -->
+            <!-- 编辑区：左边是编号栏，右边是输入框，两者是并排的两块，不叠在一起。
+                     编号栏整块不吃点击（里面那些按钮吃），所以光标照样能落到输入框上。
+                     悬挂对齐就是靠这一条栏给的：正文每一行都从它的右边开始，折行也是 -->
+            <div class="hw-area">
+              <v-textarea
+                ref="inputRef"
+                class="hw-field"
+                :model-value="bodyText"
+                auto-grow
+                rows="5"
+                @update:model-value="onBodyInput"
+                @click="scheduleCurrentLine"
+                @keydown="onInputKeydown"
+                @keyup="updateCurrentLine"
+                @mouseup="scheduleCurrentLine"
+                @select="updateCurrentLine"
+              />
+            </div>
 
             <!-- 附加科目：点一下插入「#科目名：」小节，光标落在小节里的新行。
                  只在光标停在这天的空行上时摆出来：那是「要另起一小节」的地方，
@@ -186,47 +197,49 @@
                竖直却不在这一栏内，它脱开文档流落到视口中线上，见 .numeric-keypad。
                横向不靠算坐标：fixed 不写 left 时落在自己的静态位置上，
                静态位置照这一栏的 flex 排版算，还是原来那个左边 -->
-          <div class="quick-tools ml-4" style="min-width: 180px">
+          <div class="quick-tools ml-4" style="min-width: 156px">
             <div class="numeric-keypad">
+              <!-- 数字按 789 / 456 / 123 从上往下排：跟电话和计算器一个方向，
+                   拇指往上够到的第一排是最大的那几个 -->
               <div class="keypad-row">
                 <v-btn
-                  v-for="n in 3"
+                  v-for="n in [7, 8, 9]"
                   :key="n"
                   class="keypad-btn"
                   variant="tonal"
                   @mousedown.prevent
-                  @click="insertAtCursor(String(n + 0))"
+                  @click="insertAtCursor(String(n))"
                 >
-                  {{ n + 0 }}
+                  {{ n }}
                 </v-btn>
               </div>
               <div class="keypad-row">
                 <v-btn
-                  v-for="n in 3"
+                  v-for="n in [4, 5, 6]"
                   :key="n"
                   class="keypad-btn"
                   variant="tonal"
                   @mousedown.prevent
-                  @click="insertAtCursor(String(n + 3))"
+                  @click="insertAtCursor(String(n))"
                 >
-                  {{ n + 3 }}
+                  {{ n }}
                 </v-btn>
               </div>
               <div class="keypad-row">
                 <v-btn
-                  v-for="n in 3"
+                  v-for="n in [1, 2, 3]"
                   :key="n"
                   class="keypad-btn"
                   variant="tonal"
                   @mousedown.prevent
-                  @click="insertAtCursor(String(n + 6))"
+                  @click="insertAtCursor(String(n))"
                 >
-                  {{ n + 6 }}
+                  {{ n }}
                 </v-btn>
               </div>
-              <!-- 这行的两头按光标前面停在哪换，规则见 contextKeys 的注释表。
-                   这一次不给东西的那一格淡出去藏着（.vis-fade），位置照旧留着：
-                   这一行是固定三列的网格，藏起来 0 还是待在中间，两头的键也不会挪位置 -->
+              <!-- 这一行：中间是 0，左右两格按光标前面停在哪换（见 contextKeys）。
+                   0 在中间是跟着上面 789/456/123 的习惯来：三列的键盘里 0 都在
+                   最下面那一排的中间，两边对称，手不用偏 -->
               <div class="keypad-row">
                 <v-btn
                   class="keypad-btn vis-fade"
@@ -257,16 +270,24 @@
                   {{ padKeys[1] }}
                 </v-btn>
               </div>
-              <div class="keypad-row">
-                <!-- 触发交给 v-repeat-click，所以这里只留 @mousedown.prevent 保住输入框的焦点 -->
+<div class="keypad-row">
+                <!-- 按住连删：延迟和重复速度都照 Windows 键盘的默认值，
+                     见 HOLD_REPEAT_DELAY / HOLD_REPEAT_INTERVAL 的注释。
+
+                     起始挂在 pointerdown 上，不能挂 mousedown：触屏上 mousedown
+                     是在 pointerup 之后才合成出来的，挂在它上面的话，抬手那一下
+                     已经过去了，连删收不回来——不光是连删，光点一下也会开始删。
+                     鼠标上 mousedown 早于 pointerup，所以那条路一直没暴露出来 -->
                 <v-btn
-                  v-repeat-click="{ handler: deleteLastChar }"
                   class="keypad-btn"
                   color="error"
                   variant="tonal"
                   title="删除"
                   aria-label="删除"
-                  @mousedown.prevent
+                  @pointerdown.prevent="startHoldRepeat"
+                  @pointerup="stopHoldRepeat"
+                  @pointerleave="stopHoldRepeat"
+                  @pointercancel="stopHoldRepeat"
                 >
                   <!-- 图标放默认插槽里，不用 icon 属性：icon 会强制成圆形，和旁边的键位对不上 -->
                   <v-icon icon="mdi-backspace-outline" size="small" />
@@ -282,13 +303,15 @@
                   {{ atSectionStart ? '分段' : '换行' }}
                 </v-btn>
                 <!-- 停在行首时空格没意义（顶头补空格只是个前导空格），
-                     那一格改成写小标题的 # -->
+                     那一格改成「这一行是不是小标题」。# 不再是一个塞进正文的字，
+                     而是编号栏那一格的记号：切过去 = 变成小标题，再按一下变回普通行。
+                     两边对得上：左边点一下摘 #，这边按一下摘 # -->
                 <v-btn
                   class="keypad-btn keypad-word"
                   size="small"
                   variant="tonal"
                   @mousedown.prevent
-                  @click="insertAtCursor(caretAtLineStart ? '#' : ' ')"
+                  @click="caretAtLineStart ? toggleHeading() : insertAtCursor(' ')"
                 >
                   {{ caretAtLineStart ? '#' : '空格' }}
                 </v-btn>
@@ -345,15 +368,44 @@
     </v-card>
 
   </v-dialog>
+
+  <!-- 缩放条。整个面板缩着看（见 dialogZoomStyle），所以条不放在卡片里：
+       卡片小到一定程度，右下角已经被键位和推荐面板占满了。
+       Teleport 到 body 是必须的——Vuetify 自己的浮层容器上带 transform，
+       position: fixed 在那样的祖先里会退化成 absolute，跟着卡片一起缩。
+       数值记在应用设置里（editor.zoom），下回打开还是这个大小 -->
+  <Teleport to="body">
+    <Transition name="fade">
+      <div v-if="dialogVisible" class="editor-zoom" title="编辑框缩放" @mousedown.prevent>
+        <v-slider
+          :model-value="editorZoom"
+          :min="zoomMin"
+          :max="zoomMax"
+          :step="5"
+          density="compact"
+          hide-details
+          class="editor-zoom-slider"
+          aria-label="编辑框缩放"
+          @update:model-value="setEditorZoom"
+        >
+          <template #label>
+            <span class="editor-zoom-value">{{ editorZoom }}%</span>
+          </template>
+        </v-slider>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <script>
 import dataProvider from '@/utils/dataProvider'
+import { getSetting, setSetting, watchSettings } from '@/utils/settings'
 import { formatDayName, parseDateString, shiftDateString, toDateString } from '@/utils/date'
 import { BOTTOM_KEYS, contextKeys, hasContent, hints, panelRows } from '@/utils/homeworkPanel'
 import {
   assembleDayContent,
   findDayBlockEnd,
+  HEADING_PREFIX,
   headingTitleStart,
   isPlainReserveHeading,
   parseHeadingLine,
@@ -376,6 +428,24 @@ import {
   stripLineToEnd,
 } from '@/utils/homeworkDayOps'
 import {
+  bodyLineIndex,
+  bodyToContent,
+  caretAfterChange,
+  commitBlank,
+  contentToBody,
+  ghostNumber,
+  joinContent,
+  lineColumn,
+  mergeBody,
+  nextNumber,
+  positionAt,
+  renumberAll,
+  renumberContent,
+  settleEdit,
+  splitContent,
+  stripLength,
+} from '@/utils/homeworkList'
+import {
   headingAbove,
   headingAboveStart,
   headingBlockSize,
@@ -389,6 +459,14 @@ import {
 // 里面不能出现 .v-overlay__content：它是对话框自己的内容容器，整张卡片都在它里面。
 const INTERACTIVE_SELECTOR =
   'button, a, input, textarea, select, [role="button"], .v-btn, .v-chip, .v-field, .v-list-item'
+// 缩放条是面板自己的控件，但它 teleport 到 body 上（在对话框容器之外），
+// 所以上面那份名单扫不到它，扫到了也不会关面板——见 nearInteractive 的注释。
+// 它身上也没有 button / role=button，滑块拇指是 role=slider，照样落不到那份名单里
+const ZOOM_BAR_SELECTOR = '.editor-zoom'
+// 长按按钮弹出来的那套右键菜单，在触屏上是纯添乱：弹出来占半屏，
+// 松手的时候还会顺手把按着的那个按钮触发一下。按钮上的右键菜单一律掐掉。
+// 输入框不在名单里——正文里的右键菜单（复制、粘贴）还是有用处的
+const MENU_BLOCK_SELECTOR = 'button, [role="button"], .v-chip'
 // 按下到抬起的位移超过这个值就当作滚动，不关面板
 const TAP_SLOP = 10
 // 离控件这么近以内也算点到了它
@@ -405,6 +483,28 @@ const COUNTDOWN_BAR_DELAY = 10000
 const COUNTDOWN_TICK = 200
 // （appendBlankLines），但那是「另起一份」的排版需求，只对正在编辑的那天成立
 const DEFAULT_BLANK_LINES = 1
+// 左边编号栏留多宽（字号倍数）。只按「一位数 + 句点 + 右对齐」留：两位数往右探一点，
+// 那是用户自己写出来的，不为它把每行的正文都让宽一圈。正文从这条的右边开始，
+// 折行也是从这儿开始，悬挂对齐就是这儿来的
+const GUTTER_EM = 1.15
+// 删除键按住连删：延迟和重复速度都照 Windows 键盘的默认值
+// （控制面板「键盘 → 速度」那一页：重复延迟 500ms、重复速率 31 字/秒，
+//  换算成两次之间约 32ms）。
+// 延迟比系统的 500ms 短一截：这是触摸屏上的一个按钮，不是实体键盘，
+// 按下去到开始连删之间停半秒，手感上像是没按动
+const HOLD_REPEAT_DELAY = 250
+const HOLD_REPEAT_INTERVAL = 32
+// 编辑框整体缩放的范围（百分比）。上限就 100：想放大正文去调字体设置，
+// 那条是全局的，这一条只管这个面板
+const ZOOM_MIN = 50
+const ZOOM_MAX = 100
+// 对话框 100% 时的宽度。缩放条不再改宽度，而是整体 zoom 缩（见 dialogZoomStyle）
+const DIALOG_BASE_WIDTH = 700
+// 点在这些地方不抢焦点：日期那一排上的按钮（切换日期、回到今天、日历按钮），
+// 以及日历自己弹出来的那层浮层。别的控件上点了，焦点还给输入框。
+// 注意别把整行 .date-caption 圈进来：那一行里只有按钮是控件，
+// 「今天的作业」那几个字只是标签，点它本来该把焦点收回来
+const DATE_CONTROL_SELECTOR = '.date-caption .v-btn, .v-date-picker, .v-calendar'
 
 // 从 ownerStart 起删掉一整行。标题没了，它下面那段正文就露出来了——
 // 上面要是还有个小标题，得空一行隔开，不然这段会被顺手收进那个标题里；
@@ -444,23 +544,79 @@ const HIGHLIGHT_TEXT_PROPS = [
   'whiteSpace', 'wordBreak', 'overflowWrap', 'textRendering', 'textSizeAdjust',
 ]
 
-function buildHighlightHtml(content) {
-  return String(content ?? '').split('\n').map((line) => {
-    let inner = escapeHtml(line)
-    const head = parseHeadingLine(line)
-    if (head) {
-      // 开头那一截（# 和颜色代码）跟日期后面的零碎（「：」）都跟普通正文一个颜色，
-      // 不抢注意力；日子词和它后面那个「的」刷黄；标题名有颜色代码就用那个颜色，
-      // 没有就还是 hl-head（取最高强调，和正文一致）
-      inner =
-        `<span class="hl-head">${escapeHtml(head.prefix)}</span>` +
-        `<span class="hl-date">${escapeHtml(head.day)}</span>` +
-        `<span class="hl-head">${escapeHtml(head.gap)}</span>` +
-        `<span${head.color ? ` class="hl-title" style="color: #${head.color}"` : ' class="hl-head"'}` +
-        `>${escapeHtml(head.title)}</span>`
-    }
-    return `<div class="hl-line">${inner || '<br>'}</div>`
-  }).join('')
+// 上色层里的一行。画的字必须和输入框的值**一个字不差**。
+//
+// 为什么这么要紧：textarea 自己的字是透明的（只有光标和选区留在这儿），
+// 眼睛看到的那行字是高亮层画上去的。两边只要差一个字——哪怕就多画一个 #
+// 而值里没有——后面所有字的位置就都错开一格，光标、选区、折行全对不上，
+// 而且界面上看不出哪儿错了。所以这里一个字都不自己加，# 和颜色代码都在
+// 那份正文之外（左边那一格摆着 #），别在这儿再画一遍。
+//
+// 颜色仍然按带 # 的那一份算：日子词刷黄、标题名用它自己写的颜色代码，
+// 都是从原文那一行解析出来的。刷黄的那一截（day + gap）是从行首开始的，
+// 后面剩多少就照原样画多少——不能拿 parseHeadingLine 里那份 title 来画：
+// 那份是给语义用的，尾部空白被 trim 掉了，跟正文一比就会少几个字
+function buildHighlightHtml(bodies, texts) {
+  return bodies
+    .map((line, index) => {
+      let inner = escapeHtml(line)
+      const head = parseHeadingLine(texts[index] ?? line)
+      if (head) {
+        // 日子词和它后面那个「的」刷黄；日期后面的零碎（「：」）跟普通正文一个颜色，
+        // 不抢注意力；剩下的是标题名，跟日期词一样取 hl-head（最高那一档强调）。
+        // 三段拼起来必须正好等于 line 本身：刷黄那截占前 colored 个字，其余原样带过，
+        // 结尾就算有几个空格也一个字不少
+        const colored = head.day.length + head.gap.length
+        inner =
+          `<span class="hl-date">${escapeHtml(head.day)}</span>` +
+          `<span class="hl-head">${escapeHtml(head.gap)}</span>` +
+          `<span class="hl-head">${escapeHtml(line.slice(colored))}</span>`
+      }
+      return `<div class="hl-line">${inner || '<br>'}</div>`
+    })
+    .join('')
+}
+
+// 编号栏里的每一格。格子一行对一个，位置才按行号对得上。三种格子：
+//   有正文的行：整个格子是一个按钮。有编号摆编号、没编号摆一个暗点，
+//     「点一下加编号／去编号」。整格就是按钮：编号字那么小，点它得瞄准
+//   空行：光标停上来的时候摆一个「虚拟序号」按钮——「这行写上字就是第几号」。
+//     它也是能点的：点一下 = 明说这一行不要号，敲上字也不补。
+//     光标不在这一行时什么都不摆：满屏灰数字比一个号吵得多
+//   标题行：也是按钮，上面一个 #。小标题不是一条作业，本不该占编号，
+//     但它同样需要「一个能点掉的东西」——点一下就把这行的 # 摘了，变回普通行
+function buildGutterHtml(texts, numbers, ghost) {
+  return texts
+    .map((text, index) => {
+      if (isHeadingLine(text)) {
+        return cell(index, 'hw-number hw-number-mark', '#', '点一下去掉这个 #')
+      }
+      if (!text.trim()) {
+        const on = ghost && ghost.index === index
+        // hw-number 必须带上：它的宽高全在那条样式里（.hw-number），
+        // 漏了的话空行上这个格子是 0×0，根本点不着——虚拟序号就变成
+        // 「只能收起来、点不出来了」
+        return cell(
+          index,
+          on ? 'hw-number hw-ghost' : 'hw-number',
+          on ? ghost.number + '.' : '',
+          on ? '点一下这一行不要编号' : '点一下给这一行编号',
+        )
+      }
+      const number = numbers[index]
+      return cell(index, number ? 'hw-number hw-number-on' : 'hw-number', number ? number + '.' : '', '点一下加编号／去编号')
+    })
+    .join('')
+}
+
+// 编号栏里的一格。按钮铺满整格，所以点哪儿都是它——编号字小，
+// 点偏一格就点到输入框上去放光标了（那里一点光标就跳走）
+function cell(index, cls, label, title) {
+  return (
+    '<div class="hw-number-cell">' +
+    `<button type="button" class="${cls}" data-line="${index}"` +
+    ` tabindex="-1" aria-label="${title}" title="${title}">${label}</button></div>`
+  )
 }
 
 export default {
@@ -501,7 +657,10 @@ export default {
       // 读进来时的样子，用来判断哪些天被改过
       initialDrafts: {},
       currentDate: '',
+      // 光标所在那一行，带编号的那一份。面板看不到它，搬运行的时候用它
       currentLine: '',
+      // 光标所在那一行是第几行正文。两个坐标系行数相等，行号是共用的
+      currentLineIndex: 0,
       currentLineStart: 0,
       currentLineEnd: 0,
       // 光标在这一行里的第几个字
@@ -513,7 +672,23 @@ export default {
       // 光标前有没有选中字。selectedRange 只管跨行的整块，行内选一小段它也是
       // null，所以另外记一个「有没有选区」——小键盘感知里「单选」就是靠它
       hasSelection: false,
+      // 用户明说过「这一行不要编号」的行号。空行默认是要编号的（一敲字就补上），
+      // 点它 / 按空格 / 按删除键就是反过来说「这一行不要」。
+      // 这个状态不进正文——空行本来没有正文可存，它只活在这一次编辑里；
+      // 关掉面板再打开，那一行又是「默认要编号」的样子。
+      // 放 data 里是它得是响应式的：virtualNumber 是个 computed，
+      // 读的是它；挂在 created 里就是个普通属性，computed 会拿旧值缓存住
+      refusedLines: [],
       pickerOpen: false,
+      // 编辑框整体缩放（百分比）。从应用设置读进来的，下回打开还是这个大小；
+      // 拖缩放条时写回设置
+      editorZoom: getSetting('editor.zoom') || 100,
+      // 模板要用缩放条的范围，得挂在实例上——Options API 的模板只看得到 data 里的
+      zoomMin: ZOOM_MIN,
+      zoomMax: ZOOM_MAX,
+      // 按下那一刻输入框里的选区。焦点被人抢走以后浏览器不一定留着，
+      // 抢回来时照这一份摆回去（见 keepCaretInInput）
+      savedSelection: null,
       // 顶部倒计条是否挂着。倒计一起就在，直到面板关闭
       countdownActive: false,
       // 条是否在往下走：倒计剩不到 COUNTDOWN_BAR_DELAY 才是。从满格起走，
@@ -536,14 +711,35 @@ export default {
     this._baseCache = {}
     // 预览的世代号：读存档是异步的，回来时正文可能又变了，过期的那份直接扔掉
     this._previewToken = 0
-    // 高亮底层那套：当前垫着的 textarea 和高亮 div（对话框重建时元素会换），
+    // 高亮底层那套：当前垫着的 textarea、高亮 div、编号栏（对话框重建时元素会换），
     // 以及上次抄几何时的宽度，变了才重抄。
     // _hlRO 盯着 textarea 的尺寸：auto-grow 改完高度就重对，不用猜时序
     this._hlTextarea = null
     this._hlBackdrop = null
+    this._hlGutter = null
     this._hlWidth = 0
+    // 中文输入法正在组字：这时候不动行首那个编号，摘字会把组字打断
+    this._composing = false
+    // 编号栏每一格的位置（上色层量出来的），挪当前行的高亮时直接读，
+    // 不用每动一下光标就去量一遍布局
+    this._gutterTops = []
+    this._gutterHeights = []
+    this._gutterClick = (event) => this.onGutterClick(event)
+    // 按下就把默认行为掐掉：不然焦点跑到按钮上，输入框失焦，
+    // 光标那一行的感知和面板全跟着乱。click 不受影响，照样响
+    this._gutterDown = (event) => event.preventDefault()
     // rAF 合并调度的 id：一帧里不管触发多少次，只重画一遍
     this._hlRaf = 0
+    // 上次画进编号栏的虚拟序号长什么样（空串 = 没画）。挪光标时先对一下，
+    // 只有它变了才重画编号栏——一次挪动一次重画太浪费了
+    this._ghostStamp = ''
+    // 删除键按住连删的两个定时器（见 startHoldRepeat）
+    this._holdDelay = 0
+    this._holdRepeat = 0
+    // 用户明说过「这一行不要编号」的行号。空行默认是要编号的（一敲字就补上），
+    // 点它 / 按空格 / 按删除键就是反过来说「这一行不要」。
+    // 这个状态不进正文——空行本来没有正文可存，它只活在这一次编辑里；
+    // 关掉面板再打开，那一行又是「默认要编号」的样子
     this._hlRO = new ResizeObserver(() => this.scheduleHighlightSync())
   },
   mounted() {
@@ -570,12 +766,26 @@ export default {
     document.addEventListener('keydown', this.handleKeydown, true)
     // 窗口缩放会改变编辑框宽度，高亮底层的几何要跟着重抄
     window.addEventListener('resize', this.onWindowResize)
+    // 长按按钮弹出来的右键菜单掐掉。挂 document 捕获阶段：编号栏那两颗按钮是
+    // JS 现造的，面板里又叠着日期选择器那一层浮层，挨个绑不落得住
+    document.addEventListener('contextmenu', this.blockButtonMenu, true)
+    // 点哪儿都把焦点还给输入框（日期那一排和日历浮层除外）。
+    // 按下记选区、抬手再抢焦点：浏览器的默认移焦点发生在 mousedown 上，
+    // 等到 pointerup 再动，焦点才已经被它搬走了
+    document.addEventListener('pointerdown', this.rememberSelection, true)
+    document.addEventListener('pointerup', this.keepCaretInInput, true)
+    // 设置在别的标签页/页面改了（storage 事件），这边跟着走
+    this.unwatchSettings = watchSettings((settings, event) => {
+      if (event && event.key !== 'editor.zoom') return
+      this.editorZoom = getSetting('editor.zoom') || 100
+    })
     // 字体后加载会改变换行位置，加载完重抄一份
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => this.syncHighlight())
     }
   },
   beforeUnmount() {
+    this.stopHoldRepeat()
     document.removeEventListener('pointerdown', this.handlePressStart, true)
     document.removeEventListener('pointerup', this.handlePressEnd, true)
     document.removeEventListener('pointercancel', this.cancelPress, true)
@@ -587,15 +797,49 @@ export default {
     document.removeEventListener('visibilitychange', this.handleVisibilityChange)
     document.removeEventListener('keydown', this.handleKeydown, true)
     window.removeEventListener('resize', this.onWindowResize)
+    document.removeEventListener('contextmenu', this.blockButtonMenu, true)
+    document.removeEventListener('pointerdown', this.rememberSelection, true)
+    document.removeEventListener('pointerup', this.keepCaretInInput, true)
+    if (this.unwatchSettings) this.unwatchSettings()
     if (this._hlRaf) cancelAnimationFrame(this._hlRaf)
     this._hlRaf = 0
     if (this._hlTextarea) this._hlTextarea.removeEventListener('scroll', this.onHighlightScroll)
+    if (this._hlTextarea) {
+      this._hlTextarea.removeEventListener('compositionstart', this.onCompositionStart)
+      this._hlTextarea.removeEventListener('compositionend', this.onCompositionEnd)
+    }
+    if (this._hlGutter) this._hlGutter.removeEventListener('click', this._gutterClick)
+    if (this._hlGutter) this._hlGutter.removeEventListener('mousedown', this._gutterDown)
     this._hlRO?.disconnect()
     this._hlTextarea = null
     this._hlBackdrop = null
+    this._hlGutter = null
     this.stopCloseCountdown()
   },
   computed: {
+    // 对话框的原始宽度。缩放不再改它——改宽度只是横向压扁：正文重新折行、
+    // 卡片反而更高；右边那列键位是 fixed 的，不跟着缩，挤进窄卡片里就跟推荐面板叠上了。
+    // 缩放现在交给下面那条 zoom 整体缩，这里只把基准宽度交给 v-dialog
+    dialogBaseWidth() {
+      return DIALOG_BASE_WIDTH
+    },
+    // 整体缩放对话框。zoom 是真缩排版尺寸——内容按 700 排完，整棵子树（字体、键位、
+    // 间距）一起按比例缩，比例不变。挂 transform: scale() 那条路不能走：排版盒子
+    // 一点没变，只是画小了，内容仍旧按原尺寸排版，缩出来的空白也还落在对话框盒子里。
+    // 用 zoom 缩下去以后，围着内容的那圈空白是真的在对话框盒子外面，
+    // 点它是一个正常的「点外面」，面板照常关掉（见 handlePressEnd）
+    dialogZoomStyle() {
+      return { zoom: `${this.editorZoom}%` }
+    },
+    // 对话框能占的最大宽度。要按实际缩放折算，不能直接写视口能让出的那份：
+    // max-width 是在「排版尺寸」这一层卡的（内容永远按 700 排、之后才被 zoom 整体缩），
+    // 所以窄屏时得先把视口能让出的宽度放大回 1/缩放：排版时按放大后的值卡住，
+    // 缩完正好等于视口能让出的宽度。不折算的话，窄屏下会先按 100% 把内容压到屏幕宽、
+    // 再整体缩一次——缩放设 50% 就白白缩掉一半地方，缩出来的对话框比该有的小一大截
+    dialogMaxWidth() {
+      const zoom = this.editorZoom / 100
+      return `calc((100vw - 48px) / ${zoom})`
+    },
     dialogVisible: {
       get() {
         return this.modelValue
@@ -612,6 +856,39 @@ export default {
       set(value) {
         this.drafts[this.currentDate] = value
       },
+    },
+    // 正文拆开的四份东西都在这儿：每行的编号、每行的正文、正文那份的行首偏移、
+    // 输入框那份的行首偏移。光标换算、编号栏、面板全都从这一份拿——
+    // 同一个正文拆两遍，早晚会对不上
+    listMap() {
+      return splitContent(this.content)
+    },
+    // 输入框的值：摘掉编号、也摘掉行首 # 的那一份。编号和 # 都画在左边那一栏上
+    // （见 buildGutterHtml / buildHighlightHtml），输入框里一个字都不留
+    bodyText() {
+      return this.listMap.bodies.join('\n')
+    },
+    // 光标所在那一行的正文（不带编号、不带 # 的那一份）。面板认的是用户看得见的字，
+    // 拿带编号的那一行去认，「1.」和「#」都会被当成正文的一部分
+    currentBodyLine() {
+      return this.listMap.bodies[this.currentLineIndex] ?? ''
+    },
+    // 空行上的虚拟序号：这一行写上字的话会编第几号。
+    // 两个条件都苛刻是刻意的：
+    //   得是空行——有正文的那行摆的是真编号，没这个数了
+    //   得是光标停着的这一行、而且没选着字：多选的时候「当前行」是好几行，
+    //   报一个号只会指错；再就是满屏灰数字比一个号吵得多
+    // 空编辑器就靠它给出第一个「1.」——那时只有一行，正好就是光标那一行
+    virtualNumber() {
+      if (this.hasSelection) return null
+      const map = this.listMap
+      const index = this.currentLineIndex
+      if (index < 0 || index >= map.texts.length) return null
+      if (isHeadingLine(map.texts[index]) || map.texts[index].trim()) return null
+      // 用户明说过这一行不要号，就别再拿一个「写上字就是第几号」来引诱他
+      if (this.isRefused(index)) return null
+      const numbers = map.numbers
+      return { index, number: ghostNumber(map.texts, numbers, index) }
     },
     todayString() {
       return toDateString(new Date())
@@ -649,6 +926,8 @@ export default {
         ? { day: this.selectionDay, mixed: this.selectionMixedDays }
         : null
       return panelRows(
+        // 传带 # 的那一行（currentLine），不是输入框那份正文：
+        // 面板第一件事就是判断光标在不在小标题行上，# 得在
         this.currentLine,
         this.todayString,
         this.reserveScope,
@@ -685,7 +964,7 @@ export default {
     // 附加科目什么时候摆出来：只在光标停在这天的空行上、没有整块多选的时候。
     // 不摆的时候靠 visibility 藏（配模板里的 .vis-fade 一起淡），位置留着，面板高度不跟着变
     showExtraSubjects() {
-      return !this.selectedRange && this.currentLine.trim() === ''
+      return !this.selectedRange && this.currentBodyLine.trim() === ''
     },
     // 「~」「.」那两个格子按光标前面停在哪换，规则见 contextKeys 的注释表
     padKeys() {
@@ -698,9 +977,11 @@ export default {
       return hints(this.textBeforeCaret)
     },
     // 光标在这一行里的位置。放在 data 里跟着 updateCurrentLine 一起更新，
-    // 不在 computed 里摸 DOM——渲染期读 selectionStart 既不响应，又可能炸掉整个面板
+    // 不在 computed 里摸 DOM——渲染期读 selectionStart 既不响应，又可能炸掉整个面板。
+    // 从正文那一行的开头数，也就是编号后面数：编号不在输入框里，
+    // 从行首数的话每个位置都会平移一个编号的长度
     textBeforeCaret() {
-      return this.currentLine.slice(0, this.caretInLine)
+      return this.currentBodyLine.slice(0, this.caretInLine)
     },
     // 光标单选（没选中字）而且停在这一行最开头。行首补空格只会留个前导空格，
     // 那一格改成写小标题的 #
@@ -716,13 +997,13 @@ export default {
     // 光标停在一个空行上，它不是文首、上面那行也不是空的：这一行是新起一段的
     // 开头，换行那个键改叫「分段」。做的事一样，只是名字说清这一步的用途
     atSectionStart() {
-      if (this.hasSelection || this.currentLine !== '') return false
+      if (this.hasSelection || this.currentBodyLine !== '') return false
       return this.currentLineStart > 0 && this.lineAbove.trim() !== ''
     },
     // 换行只在「这一行真有内容」的时候才亮：光秃秃一个数字、或者只有标点，
     // 现在换行只会把没写完的东西切两半
     canEndLine() {
-      return hasContent(this.currentLine)
+      return hasContent(this.currentBodyLine)
     },
     // 条挂出来那一刻到关闭还剩多久，动画就走多久，两边不会差半拍
     closeCountdownStyle() {
@@ -730,6 +1011,19 @@ export default {
     },
   },
   watch: {
+    // 日期选择器收起来之后把焦点还给输入框。
+    // 在选择器里点日期，焦点跟着进了那层浮层；选完它就消失，焦点掉回 body，
+    // 接着打字一个字也进不来。点它的时候是特意不抢焦点的（见 keepCaretInInput），
+    // 所以还回来得挑这个时候——选完了，就该回到正文上继续写
+    pickerOpen(open) {
+      if (open || !this.dialogVisible) return
+      this.$nextTick(() => {
+        const textarea = this.getTextarea()
+        if (textarea && document.activeElement !== textarea) {
+          textarea.focus({ preventScroll: true })
+        }
+      })
+    },
     // 正文一动就重画高亮底层。翻日期、插入小节走的都是 content，不用每个入口单独调。
     // 走 rAF 合并：auto-grow 改高度、浏览器滚到光标都发生在排版之后，
     // 在 nextTick 里量只能量到旧的，这正是字多时下面一半消失的原因
@@ -748,6 +1042,8 @@ export default {
       if (newValue) {
         this.drafts = {}
         this.initialDrafts = {}
+        // 上一轮编辑里说过的「这一行不要编号」跟正文没关系，带过来就串行了
+        this.refusedLines = []
         // 上一次编辑读过的存档作废：这段时间里存档可能已经被写过了
         this._baseCache = {}
         // 从面板出现那一刻开始算，读存档的耗时也算在这段倒计里
@@ -850,8 +1146,9 @@ export default {
     insertExtraSubject(name) {
       const textarea = this.getTextarea()
       if (!textarea || !name) return
-      const start = textarea.selectionStart
-      const end = textarea.selectionEnd
+      // 输入框里没有编号，位置得先换算成正文里的，下面才拿它切正文
+      const start = this.caretToContent(textarea.selectionStart)
+      const end = this.caretToContent(textarea.selectionEnd)
       const before = this.content.slice(0, start)
       let prefix = ''
       if (before) {
@@ -864,7 +1161,7 @@ export default {
       }
       const text = prefix + `#${name}：\n`
       this.content = this.content.slice(0, start) + text + this.content.slice(end)
-      this.$nextTick(() => this.restoreLineCaret(start + text.length))
+      this.renumberNow({ from: start + text.length })
     },
 
     // 过去的日子也翻得动，所以两个方向都不设限
@@ -903,7 +1200,8 @@ export default {
     },
     // 关闭判定统一走「按下—抬起」这一段手势，自己掌控，不依赖 Vuetify 的 click:outside
     // （浮层叠起来时它的 closeConditional 会因为 localTop 为 false 而永不触发）。
-    // 面板内：只有落在空白处才关；面板外（遮罩）：轻点就关。
+    // 面板内：落在真正的空白处才关（贴着控件的误触不关，焦点还给输入框）；
+    // 面板外（遮罩）：轻点就关
     handlePressStart(event) {
       if (!this.dialogVisible || event.button > 0) return
       // 多指触摸：只认第一根手指
@@ -915,6 +1213,10 @@ export default {
         y: event.clientY,
         inside: !!content?.contains(event.target),
         pickerOpen: this.pickerOpen,
+        // 按下时落在缩放条上就记一笔。拖滑块的过程中指针会离开那条元素
+        // （拖到滑轨尽头、滑出条的范围），抬手时再照落点判就判成「点了外面」，
+        // 面板当场关掉——拖个缩放把编辑框关了。所以这一下按起点算，不按落点算
+        onZoomBar: !!event.target?.closest?.(ZOOM_BAR_SELECTOR),
       }
     },
 
@@ -922,12 +1224,18 @@ export default {
       const press = this._press
       this._press = null
       if (!this.dialogVisible || !press || press.pointerId !== event.pointerId) return
+      // 拖缩放条拖出去的这一下，不算「点了外面」
+      if (press.onZoomBar) return
       // 触屏滚动：按下到抬起之间移动过就不是「点击」。
       // 只在卡片内这么算——卡片里滑动多半是想滚动或滚掉输入框的焦点，
       // 遮罩上没东西可滑，滑一下照样算「点了外面」，直接关
       if (press.inside && Math.hypot(event.clientX - press.x, event.clientY - press.y) > TAP_SLOP) return
       // 这一下是专门用来收起日期选择器的（点在它外面），别顺带把面板也关了
       if (press.pickerOpen && !this.insideFloatingOverlay(event.clientX, event.clientY)) return
+      // 落在控件上、或者贴着控件的那一下都算误触：面板留着，焦点还给输入框
+      // （keepCaretInInput 挂在 pointerup，这一下已经走过）。NEAR_PADDING 那圈容错
+      // 只给卡片里面（slack = press.inside），遮罩上不给，不然贴着卡片边点就关不掉。
+      // 落到真正的空白上就关面板——卡片里、遮罩上都一样
       if (this.nearInteractive(event.clientX, event.clientY, press.inside)) return
       this.handleClose()
     },
@@ -961,7 +1269,7 @@ export default {
     nearInteractive(x, y, slack) {
       if (this.insideFloatingOverlay(x, y)) return true
       for (const el of document.elementsFromPoint(x, y) || []) {
-        if (el.closest?.(INTERACTIVE_SELECTOR)) return true
+        if (el.closest?.(INTERACTIVE_SELECTOR) || el.closest?.(ZOOM_BAR_SELECTOR)) return true
       }
       if (!slack) return false
       // 手抖点偏了：附近 NEAR_PADDING 内还有控件，也不关。只扫对话框内部——
@@ -1004,6 +1312,15 @@ export default {
       const ref = this.$refs.inputRef
       return ref ? ref.$el.querySelector('textarea') : null
     },
+    // 输入框里的位置 → 正文里的位置。输入框里没有编号，直接拿来当正文的位置用，
+    // 落点会偏在前面若干个编号的长度上
+    caretToContent(pos) {
+      return bodyToContent(this.listMap, pos)
+    },
+    // 正文里的位置 → 输入框里的位置。setSelectionRange 只认输入框那份的坐标
+    caretToBody(pos) {
+      return contentToBody(this.listMap, pos)
+    },
     // 高亮底层：textarea 文字设透明（CSS 里），真正看见的颜色由垫在底下的 div 画。
     // 元素是 JS 现造的，塞进 Vuetify 那个 field 里面、盖在 textarea 正下方
     ensureHighlight() {
@@ -1014,17 +1331,38 @@ export default {
           this._hlTextarea.removeEventListener('scroll', this.onHighlightScroll)
           this._hlRO?.unobserve(this._hlTextarea)
         }
+if (this._hlGutter) {
+          this._hlGutter.removeEventListener('click', this._gutterClick)
+          this._hlGutter.removeEventListener('mousedown', this._gutterDown)
+        }
         this._hlTextarea = textarea
         textarea.addEventListener('scroll', this.onHighlightScroll)
+        // 组字期间的 input 事件里，正文是输入法自己拼的半成品，这时候去摘编号
+        // 会把组字打断。收尾那一下（compositionend 之后）再认，编号一样跑不掉
+        textarea.addEventListener('compositionstart', this.onCompositionStart)
+        textarea.addEventListener('compositionend', this.onCompositionEnd)
         // auto-grow 改高度、窗口缩放改宽度都走这里，时序不用猜
         this._hlRO?.observe(textarea)
         const backdrop = document.createElement('div')
         // 普通行的颜色也和正文一致，取最高强调
         backdrop.className = 'hw-highlight text-high-emphasis'
         backdrop.setAttribute('aria-hidden', 'true')
+        // 编号栏：每一行左边的编号／虚拟序号／#。它不是盖在输入框上面的，
+        // 是摆在输入框左边的一块独立区域（.hw-area 里的第一个子节点）。
+        // 整块不吃点击，只有里面那些按钮吃，所以光标照样能落到输入框上
+        const gutter = document.createElement('div')
+        gutter.className = 'hw-gutter'
+        gutter.addEventListener('click', this._gutterClick)
+        gutter.addEventListener('mousedown', this._gutterDown)
+        // 高亮层还得盖在输入框正下方（和输入框同一份排版，字才对得上），
+        // 它贴着 textarea 放，位置和尺寸都跟着 textarea 走
         const host = textarea.closest('.v-field__field') || textarea.parentElement
         host.insertBefore(backdrop, textarea)
+        // 编号栏插在 .hw-area 的最前面，也就是输入框左边那一块
+        const area = textarea.closest('.hw-area')
+        if (area) area.insertBefore(gutter, area.firstChild)
         this._hlBackdrop = backdrop
+        this._hlGutter = gutter
         this._hlWidth = 0
       }
       return true
@@ -1034,12 +1372,18 @@ export default {
     copyHighlightStyle() {
       const textarea = this._hlTextarea
       const backdrop = this._hlBackdrop
-      if (!textarea || !backdrop) return
+      const gutter = this._hlGutter
+      if (!textarea || !backdrop || !gutter) return
       const computed = window.getComputedStyle(textarea)
       for (const key of HIGHLIGHT_TEXT_PROPS) {
         backdrop.style[key] = computed[key]
+        gutter.style[key] = computed[key]
       }
       backdrop.style.padding = computed.padding
+      // 编号栏是输入框左边那块独立区域，只定它多宽。输入框自己的内边距一个字
+      // 都不动——它和编号栏是并排的两块，各占各的宽，正文从编号栏右边开始。
+      // 高亮层钉在输入框正下方，跟着输入框走就行
+      gutter.style.width = `${Math.round((parseFloat(computed.fontSize) || 16) * GUTTER_EM)}px`
       backdrop.style.top = `${textarea.offsetTop}px`
       backdrop.style.left = `${textarea.offsetLeft}px`
       backdrop.style.width = `${textarea.offsetWidth}px`
@@ -1051,11 +1395,55 @@ export default {
       if (!this.ensureHighlight()) return
       const textarea = this._hlTextarea
       const backdrop = this._hlBackdrop
+      const gutter = this._hlGutter
       if (textarea.offsetWidth !== this._hlWidth) this.copyHighlightStyle()
       backdrop.style.height = `${textarea.clientHeight}px`
-      backdrop.innerHTML = buildHighlightHtml(this.content)
+      gutter.style.height = `${textarea.clientHeight}px`
+      const map = this.listMap
+      const ghost = this.virtualNumber
+      backdrop.innerHTML = buildHighlightHtml(map.bodies, map.texts)
+      gutter.innerHTML = buildGutterHtml(map.texts, map.numbers, ghost)
+      this._ghostStamp = ghost ? ghost.index + ':' + ghost.number : ''
+      // 编号栏的格子要落在正文那一行的第一格上。行会折行，按行数算位置对不上，
+      // 直接量上色层里那一格的位置和高度——它和输入框是同一份排版，量出来准
+      this.layoutGutter()
       backdrop.scrollTop = textarea.scrollTop
       backdrop.scrollLeft = textarea.scrollLeft
+      gutter.scrollTop = textarea.scrollTop
+    },
+    // 每格的位置和高度：抄上色层里对应那一格量出来的
+    layoutGutter() {
+      const gutter = this._hlGutter
+      const rows = this._hlBackdrop?.children
+      if (!gutter || !rows) return
+      const cells = gutter.children
+      const tops = []
+      const heights = []
+      for (let i = 0; i < cells.length; i++) {
+        const top = rows[i]?.offsetTop ?? 0
+        const height = rows[i]?.offsetHeight ?? 0
+        cells[i].style.top = `${top}px`
+        cells[i].style.height = `${height}px`
+        tops.push(top)
+        heights.push(height)
+      }
+      this._gutterTops = tops
+      this._gutterHeights = heights
+    },
+    // 虚拟序号只在「光标停在哪一行」「有没有选着字」「这一行被用户说过不要号」
+    // 变的时候才变。这三种变化都不带正文变动，不会走到 syncHighlight，
+    // 所以这里自己补画一次；其余时候原样留着——每次挪光标都重画一遍太浪费
+    refreshGhost() {
+      const ghost = this.virtualNumber
+      // 记的是「画过什么」而不只是行号：同一行从「有虚拟序号」变成「没有」
+      // 行号没变，光看行号会以为不用重画
+      const stamp = ghost ? `${ghost.index}:${ghost.number}` : ''
+      if (stamp === this._ghostStamp || !this._hlGutter) return
+      this._ghostStamp = stamp
+      const map = this.listMap
+      this._hlGutter.innerHTML = buildGutterHtml(map.texts, map.numbers, ghost)
+      // 内层重造过了，几何得接着摆一遍，不然整栏堆在顶上
+      this.layoutGutter()
     },
     // 重画请求合并到下一帧：一帧里不管触发多少次（输入、滚动、尺寸变化），
     // 只在排版之后量一次、画一次，量到的高度和滚动位置才是最新的
@@ -1072,6 +1460,7 @@ export default {
       if (!this._hlTextarea || !this._hlBackdrop) return
       this._hlBackdrop.scrollTop = this._hlTextarea.scrollTop
       this._hlBackdrop.scrollLeft = this._hlTextarea.scrollLeft
+      if (this._hlGutter) this._hlGutter.scrollTop = this._hlTextarea.scrollTop
       this.scheduleHighlightSync()
     },
     // 窗口缩放：宽度变了换行位置全变，几何重抄（内容重画顺带发生）
@@ -1084,6 +1473,9 @@ export default {
     // 完成编辑这一刻顺便把正文里的「预定」标记落实掉：标记行以下的内容
     // 搬到那一天去，标记行本身不留，被搬进去的那几天也要一并交回去写盘
     async handleClose() {
+      // 面板要关了，先把还在跑的连删停掉：按钮马上就没了，
+      // 停不下来会一路删到面板关完为止
+      this.stopHoldRepeat()
       // 先落实预定。它把搬走的内容直接写进目标日的草稿，所以下面
       // changedDrafts 一次就把当天和所有目标日都算上了，不用再单独合并一遍。
       // 顺序反了的话 changedDrafts 拿到的还是没搬过的正文，标记行会被存回去
@@ -1102,16 +1494,12 @@ export default {
       if (!blocks.length) {
         if (rest !== this.content) {
           this.content = rest
-          this.currentLine = ''
-          this.currentLineStart = rest.length
-          this.currentLineEnd = rest.length
+          this.markCaretAtEnd(rest)
         }
         return []
       }
       this.content = rest
-      this.currentLine = ''
-      this.currentLineStart = rest.length
-      this.currentLineEnd = rest.length
+      this.markCaretAtEnd(rest)
       // 同一天可能被预定好几块，按正文里的先后依次追加，别打乱
       const byDate = new Map()
       for (const block of blocks) {
@@ -1122,9 +1510,11 @@ export default {
       for (const [dateString, list] of byDate) {
         // 空行统一理一遍，末尾按默认的一份留：appendBlankLines 管的是「这个面板怎么打开的」，
         // 从「继续添加作业」进来要 2 个是为了在正文末尾另起一份，
-        // 跟往目标日追加一段没关系，跟着走就会凭空多出一个空行
+        // 跟往目标日追加一段没关系，跟着走就会凭空多出一个空行。
+        // 编号按目的地那一节重排一遍：搬过去的是别处的行，编号得跟着新位置来，
+        // 不然目标日里会并着两个 1.
         const content = this.padTrailingBlankLines(
-          tidyBlankLines(assembleDayContent(await this.ensureBase(dateString), list)),
+          renumberContent(tidyBlankLines(assembleDayContent(await this.ensureBase(dateString), list))),
           DEFAULT_BLANK_LINES
         )
         // 草稿也得立刻跟上。少了这一步，这次编辑里再翻回那天，
@@ -1166,9 +1556,10 @@ export default {
       // 标记可能来自任何一天，同一个目标日要把各处的块按正文里的先后并起来
       const byDate = new Map()
       for (const [dateString, draft] of Object.entries(this.drafts)) {
-        // ownDate 传这份草稿自己那天：指回当天的不搬走，就地规范化后留在 rest 里
+        // ownDate 传这份草稿自己那天：指回当天的不搬走，就地规范化后留在 rest 里。
+        // 顺带重排一遍编号：展示板上不该出现「有个号、正文空着」的行
         const { blocks, rest } = parseReservations(draft || '', this.todayString, dateString)
-        payload[dateString] = rest
+        payload[dateString] = renumberContent(rest)
         for (const block of blocks) {
           if (!byDate.has(block.dateString)) byDate.set(block.dateString, [])
           byDate.get(block.dateString).push(block)
@@ -1183,7 +1574,7 @@ export default {
           const base =
             payload[dateString] != null ? payload[dateString] : await this.ensureBase(dateString)
           payload[dateString] = this.padTrailingBlankLines(
-            tidyBlankLines(assembleDayContent(base, list)),
+            renumberContent(tidyBlankLines(assembleDayContent(base, list))),
             DEFAULT_BLANK_LINES
           )
         })
@@ -1198,11 +1589,13 @@ export default {
       if (token !== this._previewToken) return
       this.$emit('preview', payload)
     },
-    // 改动过的日期：正文和读进来时不一致就算改过（首尾空白不算改动）
+    // 改动过的日期：正文和读进来时不一致就算改过（首尾空白不算改动）。
+    // 存进去之前重排一遍：空行上挂着的号顺手清掉（它不是一条作业），
+    // 存了的话卡片上会多出一行光秃秃的号，板上还白占一行
     changedDrafts() {
       const entries = []
       for (const dateString of Object.keys(this.drafts)) {
-        const content = (this.drafts[dateString] || '').trim()
+        const content = renumberContent((this.drafts[dateString] || '').trim())
         if (content !== (this.initialDrafts[dateString] || '').trim()) {
           entries.push({ dateString, content })
         }
@@ -1216,12 +1609,17 @@ export default {
       // 有没有选区也在这儿记：readSelectedRange 只管跨行整块，行内选一小段它给 null，
       // 小键盘感知要的分得出「只是光标」还是「选着字」
       this.hasSelection = textarea.selectionStart !== textarea.selectionEnd
-      const caret = textarea.selectionStart
-      const { text, start, end } = lineAt(this.content, caret)
+      const caret = this.caretToContent(textarea.selectionStart)
+      const { text, start, end, index } = lineAt(this.content, caret)
       this.currentLine = text
+      this.currentLineIndex = index
       this.currentLineStart = start
       this.currentLineEnd = end
-      this.caretInLine = Math.max(0, Math.min(caret - start, text.length))
+      // 列号从记号后面数：输入框里那一行的开头就是编号、# 后面，
+      // 少了这个平移，这一行每个位置都会整体偏一个记号的长度
+      const prefix = this.listMap.lines[index].length - this.listMap.bodies[index].length
+      this.caretInLine = Math.max(0, Math.min(caret - start - prefix, this.listMap.bodies[index].length))
+      this.refreshGhost()
     },
     // 选区变化不一定都有 mouseup/click 配对（拖选中途、键盘扩选、原生工具菜单）。
     // 只认焦点在我们这个 textarea 上的情况，页面上别的选区不管
@@ -1229,6 +1627,55 @@ export default {
       if (!this.dialogVisible) return
       if (document.activeElement !== this.getTextarea()) return
       this.updateCurrentLine()
+    },
+    onCompositionStart() {
+      this._composing = true
+    },
+    onCompositionEnd() {
+      this._composing = false
+    },
+    // 面板开着的时候，按钮上的右键菜单一律掐掉。触屏上长按弹出来的那一套
+    // （复制／粘贴／添加到主屏幕）占半屏，松手还容易把长按的那个按钮顺手触发掉。
+    // 输入框不在名单里，正文里的右键菜单还得留着
+    blockButtonMenu(event) {
+      if (!this.dialogVisible) return
+      if (event.target?.closest?.(MENU_BLOCK_SELECTOR)) event.preventDefault()
+    },
+    // 按下那一刻先把输入框里的选区存一份。
+    // 点在卡片空白、标题、正文这些不可聚焦的地方，浏览器会把焦点丢回 body，
+    // 选区也跟着没了——抢回焦点时没有这一份就得把光标摆到开头
+    rememberSelection(event) {
+      this.savedSelection = null
+      if (!this.dialogVisible || this.isDateControl(event.target)) return
+      const textarea = this.getTextarea()
+      if (!textarea) return
+      this.savedSelection = { start: textarea.selectionStart, end: textarea.selectionEnd }
+    },
+    // 抬手时把焦点还给输入框。点日期那一排和日历浮层除外——
+    // 那上面点了就是要操作日期，焦点得留在那儿给键盘用
+    keepCaretInInput(event) {
+      const saved = this.savedSelection
+      this.savedSelection = null
+      if (!saved || !this.dialogVisible) return
+      if (this.isDateControl(event.target)) return
+      const textarea = this.getTextarea()
+      if (!textarea || document.activeElement === textarea) return
+      textarea.focus({ preventScroll: true })
+      // 照存下来的那份摆回去。整份都在有效范围内才摆，
+      // 内容在这中间被改短了就越界了，那时候别硬设（浏览器会自己夹住）
+      const length = textarea.value.length
+      if (saved.start <= length && saved.end <= length) {
+        textarea.setSelectionRange(saved.start, saved.end)
+      }
+    },
+    isDateControl(target) {
+      return !!target?.closest?.(DATE_CONTROL_SELECTOR)
+    },
+    // 缩放条拖完写回应用设置，下次打开还是这个大小
+    setEditorZoom(value) {
+      const zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(value) || 100))
+      this.editorZoom = zoom
+      setSetting('editor.zoom', zoom)
     },
     // 点落在选区内部时，浏览器把选区收掉比 mouseup/click 晚一拍，当场读到的还是
     // 旧选区——表现就是「点在选区内第一次没反应、要点第二下」。
@@ -1243,7 +1690,9 @@ export default {
     readSelectedRange() {
       const textarea = this.getTextarea()
       if (!textarea) return null
-      const { selectionStart: from, selectionEnd: to } = textarea
+      const map = this.listMap
+      const from = bodyToContent(map, textarea.selectionStart)
+      const to = bodyToContent(map, textarea.selectionEnd)
       if (from >= to) return null
       const content = this.content
       const start = content.lastIndexOf('\n', from - 1) + 1
@@ -1340,8 +1789,7 @@ export default {
         if (!result) return
         this.content = result.text
         // 光标跟着摘走的那一行走（行里的列号没变），别掉到文末空行上
-        const caret = result.blockStart + this.caretInLine
-        this.$nextTick(() => this.restoreLineCaret(caret))
+        this.renumberNow({ from: result.blockStart + this.caretInLine })
         return
       }
       if (this.mergeSelectedLines(day, false)) return
@@ -1384,16 +1832,11 @@ export default {
       if (!result) result = applyDayToSelection(before, range.start, range.end, word, strip)
       if (!result || result.text === before) return
       this.content = result.text
-      this.$nextTick(() => {
-        // 选区得留着，面板才继续停在「整块改」那一页。加了 # 行之后位置全变了，
-        // 按动过的那块重新框，别拿旧偏移去框
-        const textarea = this.getTextarea()
-        if (!textarea) return
-        textarea.setSelectionRange(
-          result.blockStart,
-          this.lineRangeEnd(this.content, result.blockStart, result.blockLines),
-        )
-        this.updateCurrentLine()
+      // 重编号会改动前面几行那几个字的长度，选区得按「第几行」重新框，
+      // 别拿重编号之前的偏移去框
+      this.renumberNow({
+        from: result.blockStart,
+        to: this.lineRangeEnd(result.text, result.blockStart, result.blockLines),
       })
     },
     // 把光标这一行并进那天已有的某一节，而不是新起一节。成功返回 true。
@@ -1405,9 +1848,8 @@ export default {
       if (!merged) return false
       this.content = merged.text
       // 光标跟着挪过去的那一行走。行里的列号没变（那几行一个字都没动），
-      // 用挪动后的行首加上原来的列号就行
-      const caret = merged.blockStart + this.caretInLine
-      this.$nextTick(() => this.restoreLineCaret(caret))
+      // 用挪动后的行首加上原来的列号就行。搬完按目的地那一节重排一遍编号
+      this.renumberNow({ from: merged.blockStart + this.caretInLine })
       return true
     },
     // 光标停在 # 行上：改的就是这个标题本身。
@@ -1421,7 +1863,7 @@ export default {
     retitleHeading(day, strip) {
       const textarea = this.getTextarea()
       if (!textarea) return
-      const column = textarea.selectionStart - this.currentLineStart
+      const column = this.caretToContent(textarea.selectionStart) - this.currentLineStart
       const offsetInName = column - headingTitleStart(this.currentLine)
       const wasEmpty = /^[ \t　]*#[ \t　]*$/.test(this.currentLine)
       const next = wasEmpty || (strip && isPlainReserveHeading(this.currentLine))
@@ -1431,7 +1873,7 @@ export default {
       if (!next) {
         const dropped = dropHeadingLine(this.content, this.currentLineStart)
         this.content = dropped.text
-        this.$nextTick(() => this.restoreLineCaret(dropped.caretAt))
+        this.renumberNow({ from: dropped.caretAt })
         return
       }
       this.content = blankAfterHeading(this.content, this.currentLineStart, next)
@@ -1449,7 +1891,7 @@ export default {
     retitleOwner(ownerStart, day, strip) {
       const textarea = this.getTextarea()
       if (!textarea) return
-      const column = textarea.selectionStart - this.currentLineStart
+      const column = this.caretToContent(textarea.selectionStart) - this.currentLineStart
       const ownerEnd = this.content.indexOf('\n', ownerStart)
       const end = ownerEnd < 0 ? this.content.length : ownerEnd
       const owner = this.content.slice(ownerStart, end)
@@ -1459,7 +1901,7 @@ export default {
         // 整行删掉，正文跟上面那一节并成一段。光标还在原来那一行上
         const dropped = dropHeadingLine(this.content, ownerStart)
         this.content = dropped.text
-        this.$nextTick(() => this.restoreLineCaret(dropped.caretAt + column))
+        this.renumberNow({ from: dropped.caretAt + column })
         return
       }
       this.content = this.content.slice(0, ownerStart) + next + this.content.slice(end)
@@ -1500,6 +1942,10 @@ export default {
       // 空行一被收掉，位置全往前挪，光标就落到文末去了
       rest = tidyBlankLines(rest)
       const blockEnd = findDayBlockEnd(rest, day)
+      // 搬过去的这一行连着它的编号一起走（line 是带编号的那一截），
+      // caretInLine 是光标在**正文**里的第几个字，两边差着一个编号的长度。
+      // caret 是正文里的位置，算的时候得把这个差补回去，补错了光标就偏一格
+      const prefix = line.length - this.listMap.bodies[this.currentLineIndex].length
       let text = ''
       let caret = 0
       if (blockEnd >= 0) {
@@ -1508,7 +1954,9 @@ export default {
         // 得自己补一个，不然新行会粘在标题那一行上
         const glue = blockEnd > 0 && rest[blockEnd - 1] !== '\n' ? '\n' : ''
         text = rest.slice(0, blockEnd) + glue + line + '\n' + rest.slice(blockEnd)
-        caret = blockEnd + glue.length + line.length
+        // 光标跟着这一行走，停在它原来那个字后面，不是行尾。
+        // 光标停在「背|诵」中间，搬完就该还在「背|诵」，落到行尾就偏了
+        caret = blockEnd + glue.length + prefix + this.caretInLine
       } else {
         // 末尾新起一节。# 前面留一个空行就好，先把尾部换行抹平，
         // 不然正文末尾本来就有的空行会跟这个叠成两行。
@@ -1516,12 +1964,13 @@ export default {
         const body = rest.replace(/\n+$/, '')
         const head = body.trim() ? body + '\n\n' : ''
         text = head + heading + '\n' + line
-        caret = text.length
+        // 同上：这一行摆在最后，光标停在它原来那个字后面
+        caret = text.length - line.length + prefix + this.caretInLine
       }
       // 插入本身可能造出新的空行（比如新标题前面那一个），所以最后再兜底理一遍
       text = tidyBlankLines(text)
       this.content = text
-      this.$nextTick(() => this.restoreLineCaret(caret))
+      this.renumberNow({ from: caret })
     },
     // 往光标处写一个按钮上的字。按钮上的字用户已经自己敲过一半时，只补剩下那几个
     // （已经打了「明天」再点「明天上课对答案」，就只补一个「上课对答案」），
@@ -1536,7 +1985,9 @@ export default {
         this.insertAtCursor(word)
         return
       }
-      const at = row?.endsLine ? this.currentLineEnd : textarea.selectionStart
+      const at = row?.endsLine
+        ? this.currentLineEnd
+        : this.caretToContent(textarea.selectionStart)
       const typed = this.typedPrefix(this.content.slice(this.currentLineStart, at), word)
       const rest = typed ? word.slice(typed.length) : word
       // comma 那一排（收尾建议）是在已有内容后面接一句，所以先补一个逗号隔开。
@@ -1550,8 +2001,10 @@ export default {
       // 自动换行是替用户做了一件事，说一声，不然光标莫名其妙跳到下一行
       if (row?.endsLine) this.$message.success('已换行', '这一条收尾了，接着写下一条')
       // 收尾那一排要写到行尾，不是光标处。挪光标会打断浏览器的撤销分组，
-      // 所以那种情况老实走字符串拼接；其余（光标本来就在那儿）走原生通道
-      if (at === textarea.selectionStart && this.insertNative(insert)) {
+      // 所以那种情况老实走字符串拼接；其余（光标本来就在那儿）走原生通道。
+      // 光标位置要比就比换算过的那一份：编号行上两个坐标系差着编号的长度，
+      // 直接拿输入框那个来比，编号行会一律走拼接，撤销就没了
+      if (at === this.caretToContent(textarea.selectionStart) && this.insertNative(insert)) {
         this.updateCurrentLine()
         return
       }
@@ -1570,50 +2023,434 @@ export default {
     },
     // 手动换行：结束这一条，另起一行。走光标这一条路——单选时光标在哪就换在哪，
     // 选中了字就用换行把选区替换掉。不再自己挪到行尾：那一套只认行尾，
-    // 光标停在行中间会把换行插到别处去，拖着选区更是插出一段重复内容
+    // 光标停在行中间会把换行插到别处去，拖着选区更是插出一段重复内容。
+    // 编号行的续号也在 breakLine 里一起办了（换行键和回车走同一个入口）
     startNextItem() {
-      this.insertAtCursor('\n')
+      this.breakLine()
     },
-    // 改完正文重新定位光标：聚焦 + 落到指定位置 + 把当前行刷新一遍。
-    // DOM 要等 Vue 渲染完才能动，所以调用方一律包在 $nextTick 里
-    restoreLineCaret(position) {
+    // 把输入框的值和光标一起摆正。after 是正文里的位置（那边带着编号，要换算）；
+// 值排在前面收拾：摘编号那一步改的是浏览器自己的值，正文要是没变，
+// Vue 不会重新渲染，那个值就没人管了（见 onBodyInput）
+placeBodyCaret(at, to = at) {
       const textarea = this.getTextarea()
       if (!textarea) return
       textarea.focus()
-      textarea.setSelectionRange(position, position)
+      const want = this.bodyText
+      if (textarea.value !== want) textarea.value = want
+      textarea.setSelectionRange(at, to)
       this.updateCurrentLine()
+    },
+    // 正文位置 → 输入框位置再摆正
+    placeCaret(from, to = from) {
+      this.placeBodyCaret(this.caretToBody(from), this.caretToBody(to))
+    },
+    // 改完正文重新定位光标：聚焦 + 落到指定位置 + 把当前行刷新一遍。
+    // position 是正文里的位置，落进输入框之前要换算（那边没有编号）。
+    // DOM 要等 Vue 渲染完才能动，所以调用方一律包在 $nextTick 里
+    restoreLineCaret(position) {
+      this.placeCaret(position)
+    },
+    // 正文动过之后，把「光标在末尾那一行」这件事记下来给面板看。
+    // 这时候 DOM 还没跟上（value 要等 Vue 渲染完才更新），摸 DOM 读到的是旧值，
+    // 所以这一份是照着新正文直接算的
+    markCaretAtEnd(content) {
+      const map = splitContent(content)
+      const index = map.texts.length - 1
+      this.currentLine = map.lines[index]
+      this.currentLineIndex = index
+      this.currentLineStart = map.starts[index]
+      this.currentLineEnd = content.length
+      this.caretInLine = 0
+      this.hasSelection = false
+      this.refreshGhost()
+    },
+    // 输入框里改了一下：把输入框并回正文。
+    // 行首新敲出来的「N.」在这里收成编号，编号连同紧跟的那个空格一起从输入框里
+    // 摘掉（摘的是浏览器自己改出来的值，撤销栈不记这一下，所以光标要自己挪回去）。
+    // 两边的行号对得上，其余的行原来有没有编号就还有没有——见 mergeBody
+    onBodyInput(body) {
+      const textarea = this.getTextarea()
+      const raw = textarea ? textarea.selectionStart : 0
+      const anchor = body.slice(0, raw).split('\n').length - 1
+      const before = this.listMap
+      const next = mergeBody(body, this.content, anchor, !this._composing)
+      const after = splitContent(next)
+      // 光标前面那一行开头被摘掉几个字（敲出来的编号连同一个空格），
+      // 算光标落点得减掉它，不然敲完「1.」光标停在正文第一个字后面一格
+      const cut = stripLength(body.slice(before.bodyStarts[anchor] ?? 0, raw), before.numbers[anchor])
+      const caret = caretAfterChange(before, after, raw, cut)
+      // 「不要编号」记的是行号，行一增一减就全错位了：删掉上面一行，
+      // 记在下面的那条就跑到了别的行头上，回头再敲字就给它补上了号。
+      // 这儿按行数差把它挪回去
+      this.shiftRefusals(after.texts.length - before.texts.length, anchor)
+      if (next !== this.content) this.content = next
+      // 空行刚敲上字：默认给它补上编号（用户点过「不要」的那一行除外）。
+      // 补的是「刚变有字」这一下，不是每敲一个字都补——已经有字的行被继续
+      // 编辑，编号不因为「动了它」而变，用户主动去掉的号也不会自己回来
+      this.commitNumber(anchor, before)
+      // 编号的收尾：整篇按「每一段从上到下连号」重排一遍
+      this.settleNumbers()
+      if (this.bodyText === body) {
+        this.updateCurrentLine()
+        return
+      }
+      // 编号连同它后面那个空格被摘掉了：输入框里的值和 bodyText 对不上，
+      // 浏览器改值会把光标甩到末尾，下一拍按新正文的位置挪回去。
+      // caret 已经是输入框里的坐标，直接放回去——再换算一轮反倒会踩到编号那一截
+      this.$nextTick(() => this.placeBodyCaret(caret))
+    },
+    // 空行刚变成有字的那一下补号。只在「之前是空的、现在有字了」时才补；
+    // 用户点过/按过空格/按过删除键说「这一行不要号」的，跳过
+    commitNumber(index, before) {      const map = this.listMap
+      const wasBlank = index < (before?.texts?.length ?? 0) && !before.texts[index].trim()
+      if (!wasBlank) return
+      if (!map.texts[index] || !map.texts[index].trim()) return
+      if (this.isRefused(index)) return
+      const numbers = map.numbers.slice()
+      commitBlank(map.texts, numbers, index)
+      this.content = joinContent(map.texts, numbers)
+    },
+// 编号的收尾跟输入一起办：把整篇按「每一节从上到下连号」重排一遍。
+    // 排整篇而不是光标那一节：插个空行把一节劈成两节时，下半截该从 1 重新数起；
+    // 删个空行把两节并成一段时，整段该接着上一段往下数。只盯着光标那一节，
+    // 另一边的编号就停在旧值上不动了
+    //
+    // 这里不新增编号：用户敲 `3.` 就已经明说了「这条是第三条」，
+    // 代码再去猜哪些行该有号，只会在用户主动去掉号的行被一编辑就冒出号来。
+    // 唯一由代码补号的地方是 breakLine（回车接着往下编），那里摆明了的。
+    // 输入框一个子都没变（编号不进正文），所以光标和选区原样不动
+    settleNumbers() {
+      const map = this.listMap
+      const numbers = map.numbers.slice()
+      settleEdit(map.texts, numbers)
+      const next = joinContent(map.texts, numbers)
+      if (next === this.content) return
+      this.content = next
+    },
+// 输入框里按回车、空格、删除键。
+    // 回车：切行，新行摆出「写上字就是第几号」的虚拟序号（见 virtualNumber）。
+    //       在一行中间回车是把一行劈成两半，劈出来那半不该自动拿号——
+    //       那是同一件事的两半，不是新的一条
+    // 空格：行首按 = 点这一行的记号按钮（加编号／去编号／去 #）
+    // 删除键：只在全文最开头用来摘掉那一行的编号（见下面）
+    // 其余的键一律不插手：退格、删除键都得能正常删字、删换行符
+    onInputKeydown(event) {
+      // 中文输入法组字中：回车是「上屏」，交回输入法
+      if (event.isComposing) return
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        this.breakLine()
+        return
+      }
+      // 光标停在行首按 #：切换这一行的 # 状态。不能把 # 真塞进输入框——
+      // 那个字一进来就会顶在正文最前面，光标和正文当场错开一格（见下面的说明）
+      if (event.key === '#') {
+        const line = this.lineUnderCaret()
+        if (line < 0) return
+        event.preventDefault()
+        this.toggleHeadingAt(line)
+        return
+      }
+      if (event.key === ' ') {
+        const line = this.lineUnderCaret()
+        if (line < 0) return
+        event.preventDefault()
+        this.toggleLineNumber(line)
+        return
+      }
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      const line = this.lineUnderCaret()
+      if (line < 0) return
+      // # 行开头：删除键／退格清掉 # 状态（这一行变回无序号），不删换行符。
+      // 不管这一行是不是在全文最开头都这么办
+      if (isHeadingLine(this.listMap.texts[line])) {
+        event.preventDefault()
+        this.dropHeadingMark(line)
+        return
+      }
+      // 有编号的行：只有全文最开头才拿删除键去摘编号——那儿光标前面本来就没有字，
+      // Delete 删不掉什么，摘掉编号正合适。别的位置上删除键就老老实实
+      // 删正文／删换行符——用户在那儿是要删字，不是要改编号
+      if (this.getTextarea()?.selectionStart !== 0) return
+      if (!this.markedLine(line)) return
+      event.preventDefault()
+      this.dropMark(line)
+    },
+    // 光标停在某一行的正文最开头（后面没选着字），返回那一行的行号；
+    // 不在行首就返回 -1。空行也算——行首按删除键/空格就是动它的记号
+    lineUnderCaret() {
+      const textarea = this.getTextarea()
+      if (!textarea || textarea.selectionStart !== textarea.selectionEnd) return -1
+      const map = this.listMap
+      const index = bodyLineIndex(map, textarea.selectionStart)
+      return textarea.selectionStart === map.bodyStarts[index] ? index : -1
+    },
+    // 同一行上头顶有没有记号（编号／#／空行上的虚拟序号）。没有的话删键就
+    // 老老实实去删字／删换行符，不拦它
+    markedLine(index) {
+      const map = this.listMap
+      if (index < 0 || index >= map.texts.length) return false
+      if (isHeadingLine(map.texts[index])) return true
+      if (!map.texts[index].trim()) return !this.isRefused(index)
+      return map.numbers[index] > 0
+    },
+    // 摘掉一行顶上的记号：标题行去 #，空行记下「不要编号」并收掉虚拟序号，
+    // 有正文的行去编号（去完那行还是普通正文）
+    dropMark(index) {
+      const map = this.listMap
+      if (index < 0 || index >= map.texts.length) return
+      if (isHeadingLine(map.texts[index])) {
+        this.dropHeadingMark(index)
+        return
+      }
+      if (!map.texts[index].trim()) {
+        if (!this.refuse(index)) return
+        this.refreshGhost()
+        this.syncHighlight()
+        return
+      }
+      this.writeNumbers((numbers) => {
+        numbers[index] = 0
+      })
+    },
+    // 换行。编号是「有正文才算」的：新行现在就是空的，正文里不留号，
+    // 编号栏上摆一个虚拟序号告诉用户「这行写上字就是第几号」。
+    // 自己切正文，不走原生插入那条路：那条路要靠 input 事件再把正文跟上，
+    // 中间只要错开一拍（失焦、浏览器不认带换行的 insertText），
+    // 这一下就等于什么都没发生——回车没反应、编号更是无从谈起
+    breakLine() {
+      const textarea = this.getTextarea()
+      if (!textarea) return
+      const map = this.listMap
+      const { selectionStart, selectionEnd } = textarea
+      // 选区横跨好几行时，回车是把这几行切开重排，不是照原样插一个换行。
+      // 切片按输入框那份（摘掉编号也摘掉 # 的）切，光标位置正好对上
+      const first = bodyLineIndex(map, selectionStart)
+      const last = bodyLineIndex(map, selectionEnd)
+      const head = map.bodies[first].slice(0, selectionStart - map.bodyStarts[first])
+      const tail = map.bodies[last].slice(selectionEnd - map.bodyStarts[last])
+      // 光标停在行首（没选字）按回车：在它上面插一个空行，原来这一行连同它的
+      // #／编号原样留在下面，光标落到新的空行上。有 # 的行、有序号的行都按这个来——
+      // 老写法是把这一行劈成空的上半截和带正文的下半截，上半截继承了 #／编号、
+      // 正文那一截反倒丢了，按一下回车等于把 # 和序号搬到了上面那行
+      if (selectionStart === selectionEnd && selectionStart === map.bodyStarts[first]) {
+        const texts = map.texts.slice()
+        const numbers = map.numbers.slice()
+        texts.splice(first, 0, '')
+        numbers.splice(first, 0, 0)
+        // 「不要编号」记的是行号，前面插一行之后下面全往后挪一位
+        this.refusedLines = this.refusedLines.map((i) => (i < first ? i : i + 1))
+        this.content = joinContent(texts, numbers)
+        this.settleNumbers()
+        // 新空行的行首在输入框里还是原位置（它上面那些行一个字没动）
+        this.$nextTick(() => this.placeBodyCaret(this.listMap.bodyStarts[first]))
+        return
+      }
+      // 标题行的 # 输入框里没有，劈开的时候留在上半截，下半截就不算小标题了
+      const mark = HEADING_PREFIX.exec(map.texts[first])
+      const texts = map.texts.slice()
+      const numbers = map.numbers.slice()
+      texts.splice(first, last - first + 1, (mark ? mark[0] : '') + head, tail)
+      numbers.splice(first, last - first + 1, numbers[first], 0)
+      // 「不要编号」记的是行号，插一行之后 first 之下全往后挪一位，
+      // 不跟着挪的话那些记号就落到别的行上去了
+      this.refusedLines = this.refusedLines.map((i) => (i < first ? i : i + 1))
+      // 在一行中间回车是把这一行劈成两半。劈出来的那半不是新的一条作业，
+      // 是同一件事的下半截，不该自己拿号——标成「这一行不要编号」，
+      // 敲上字也不会补。在行尾回车（tail 是空的）才是接着往下写，那行照常给号
+      if (tail) this.refusedLines = [...this.refusedLines, first + 1]
+      // 新行不挂号：空行本来就不算一条作业，编号栏上摆的是「写上字就是第几号」
+      // 的虚拟序号（见 virtualNumber / ghostNumber），等真敲上字 commitBlank
+      // 才把上一行的号接上来。在这里就把号挂上去的话，用户点一下虚拟序号
+      // 说「这一行不要」，下一拍 mergeBody 会把挂着的号原样带回来，拒绝就白给了
+      this.content = joinContent(texts, numbers)
+      this.settleNumbers()
+      // 光标落在新行行首。那本来就是输入框里的坐标（输入框里没有编号，
+      // 正文的行首在它后面还差着一个编号），直接摆过去，别绕换算
+      this.$nextTick(() => this.placeBodyCaret(this.listMap.bodyStarts[first + 1]))
+    },
+    // 编号栏上的一个格子被点了。它管的是「这一行顶上的那个记号」，三套动作：
+    //   标题行：把行首的 # 摘掉，这一行变回普通正文
+    //   空行：光标那一行上点一下 = 收起虚拟序号；点在别的空行上 =
+    //         把光标搬过去（虚拟序号只画在光标那一行，见 virtualNumber），
+    //         搬过去还得把「这一行不要编号」的记号撤掉，不然搬了也白搬
+    //   有正文的行：加编号／去编号
+    toggleLineNumber(index) {
+      const map = this.listMap
+      if (index < 0 || index >= map.texts.length) return
+      if (isHeadingLine(map.texts[index])) {
+        this.dropHeadingMark(index)
+        return
+      }
+      if (!map.texts[index].trim()) {
+        if (index === this.currentLineIndex) this.toggleRefuse(index)
+        else this.focusLine(index)
+        return
+      }
+      this.writeNumbers((numbers) => {
+        numbers[index] = numbers[index] > 0 ? 0 : nextNumber(map.texts, map.numbers, index)
+      })
+    },
+    // 把光标搬到某一空行的行首（点编号栏上的空格子时用）。
+    // 虚拟序号只画在光标那一行，所以要先搬过去它才看得见；
+    // 搬过去还得撤掉「这一行不要编号」，否则搬了也是白搬
+    focusLine(index) {
+      const at = this.refusedLines.indexOf(index)
+      if (at >= 0) this.refusedLines = this.refusedLines.filter((i) => i !== index)
+      const textarea = this.getTextarea()
+      if (!textarea) {
+        this.refreshGhost()
+        return
+      }
+      textarea.focus({ preventScroll: true })
+      const pos = this.listMap.bodyStarts[index]
+      textarea.setSelectionRange(pos, pos)
+      this.updateCurrentLine()
+    },
+    // 键上那个 #：光标这一行是小标题就摘了它，是普通行就补上。
+    // 和点左边编号栏那一格是一个动作，两个入口做同一件事
+    toggleHeading() {
+      this.toggleHeadingAt(this.currentLineIndex)
+    },
+    // 把第 index 行的 # 状态翻过来。行首按 # 键也走这里（见 onInputKeydown）
+    toggleHeadingAt(index) {
+      const map = this.listMap
+      if (index < 0 || index >= map.texts.length) return
+      if (isHeadingLine(map.texts[index])) this.dropHeadingMark(index)
+      else this.addHeadingMark(index)
+    },
+    // 点编号栏上的哪一个
+    onGutterClick(event) {
+      const cell = event.target.closest('[data-line]')
+      if (!cell) return
+      this.toggleLineNumber(Number(cell.dataset.line))
+    },
+    // 摘掉标题行行首的 #（连带后面的空白）。点按钮、删除键、行首的 # 键都走这里。
+    // 摘掉之后这一行是「无序号」状态：小标题本来就不占编号，变回普通正文也不自动
+    // 补一个——用户没说要编号，硬塞一个新号进去就等于替他改主意了。
+    // 想要号再点左边那一格
+    dropHeadingMark(index) {
+      const map = this.listMap
+      const texts = map.texts.slice()
+      texts[index] = texts[index].replace(/^[ \t　]*#+[ \t　]*/, '')
+      const numbers = map.numbers.slice()
+      numbers[index] = 0
+      this.content = joinContent(texts, numbers)
+      this.settleNumbers()
+      this.$nextTick(() => this.placeBodyCaret(this.listMap.bodyStarts[index]))
+    },
+    // 补一个 #：空行或普通行变成小标题。有编号的先把号摘掉——小标题不是一条作业
+    addHeadingMark(index) {
+      const map = this.listMap
+      const texts = map.texts.slice()
+      texts[index] = '#' + texts[index]
+      const numbers = map.numbers.slice()
+      numbers[index] = 0
+      this.content = joinContent(texts, numbers)
+      this.settleNumbers()
+      this.$nextTick(() => this.placeBodyCaret(this.listMap.bodyStarts[index]))
+    },
+    // 这一行是不是被用户明说过「不要编号」
+    isRefused(index) {
+      return this.refusedLines.includes(index)
+    },
+    // 行数变了之后把「不要编号」的记号挪到正确的行上。
+    // 改动都发生在光标那一行（anchor）：anchor 之上少了几行，下面的记号就得跟着往前挪；
+    // 多出来几行同理往后挪。挪不动、也判断不了归属的就丢了——少记一行号顶多
+    // 让用户多点一下，比记号落到别的行上、回头又冒出序号要好
+    shiftRefusals(shift, anchor) {
+      if (!shift || !this.refusedLines.length) return
+      if (shift < 0) {
+        this.refusedLines = this.refusedLines
+          .filter((i) => i > anchor)
+          .map((i) => Math.max(0, i + shift))
+      } else {
+        this.refusedLines = this.refusedLines.map((i) => (i < anchor ? i : i + shift))
+      }
+    },
+    // 空行上「要不要编号」的开关。默认是要的（点开编辑器第一行就是 1.），
+    // 点一下 / 按空格 / 按删除键就是不要了；再点一下又要回来
+    toggleRefuse(index) {
+      const at = this.refusedLines.indexOf(index)
+      this.refusedLines = at < 0 ? [...this.refusedLines, index] : this.refusedLines.filter((i) => i !== index)
+      this.refreshGhost()
+      this.syncHighlight()
+    },
+    // 删除键只做「去」，不做「加」：空行上它把虚拟序号收起来，
+    // 有编号的行上它把编号摘掉。用户明说了这个键不负责加号
+    refuse(index) {
+      if (this.isRefused(index)) return false
+      this.refusedLines = [...this.refusedLines, index]
+      return true
+    },
+    // 写编号。动完按「每一节从上到下连号」把整篇重排一遍——
+    // 用户点最上面那一行，多半是嫌下面的号乱了（存档里旧版本存下来的正文
+    // 就常是 1. / 1. / 5. 这种），期望的是点一下下面全跟着修正。
+    // 所以这里排的是整篇，不是点的那一节：点最上面一行，修正的是下面所有行
+    // 动的只是正文里的那几个字，bodyText 一个子都没变，所以输入框和光标原样不动
+    writeNumbers(change) {
+      const map = this.listMap
+      const numbers = map.numbers.slice()
+      change(numbers)
+      renumberAll(map.texts, numbers)
+      const next = joinContent(map.texts, numbers)
+      if (next === this.content) return
+      this.content = next
+    },
+    // 行搬动之后（预定搬到另一天、并进小节、删掉一整节）节的范围变了，
+    // 按「每节自动连续编号」重新对一遍。光标和选区按「第几行第几个字」放回去——
+    // 绝对偏移不行：编号从 1. 改成 12. 会把后面所有字的位置都挪一格
+    renumberNow(range) {
+      const map = this.listMap
+      const numbers = map.numbers.slice()
+      renumberAll(map.texts, numbers)
+      this.content = joinContent(map.texts, numbers)
+      const end = this.content.length
+      const from = lineColumn(map, range?.from ?? end)
+      const to = lineColumn(map, range?.to ?? range?.from ?? end)
+      this.$nextTick(() => {
+        const after = this.listMap
+        this.placeCaret(
+          positionAt(after, from.line, from.column),
+          positionAt(after, to.line, to.column),
+        )
+      })
     },
     // 尽量走浏览器自己的插入通道 insertText。它是往「当前光标/选区」插，
     // 浏览器会把它记进原生撤销栈，用户 ctrl+z 能撤掉；
     // 直接改 this.content 的话 v-model 一设 .value，撤销栈就被清空了。
     // 返回 false 表示这条路走不通，调用方退回字符串拼接（没有撤销，但行为一致）
-    insertNative(text) {
+    // replaceSelection：粘贴时要替换选区。插入通道本来不碰有选区的情况
+    // （把选区替换掉这一下，用户按 ctrl+z 未必预期），粘贴不一样——
+    // 换掉选区正是粘贴的语义，而且得让撤销栈记上
+    insertNative(text, replaceSelection = false) {
       const textarea = this.getTextarea()
       if (!textarea || !text) return false
       if (document.activeElement !== textarea) return false
       // 有选区时等于替换选区。原生撤销能记这一下，但把选区替换掉的语义
       // 用户按 ctrl+z 未必预期得到，这种就别凑这个热闹了
-      if (textarea.selectionStart !== textarea.selectionEnd) return false
+      if (!replaceSelection && textarea.selectionStart !== textarea.selectionEnd) return false
       try {
         return document.execCommand('insertText', false, text)
       } catch (error) {
         return false
       }
     },
-    insertAtCursor(text) {
-      if (!text) return
+    insertAtCursor(text, replaceSelection = false) {
+      if (!text) return false
       const textarea = this.getTextarea()
-      if (!textarea) return
-      const start = textarea.selectionStart
-      const end = textarea.selectionEnd
-      // 原生通道：DOM 已经被浏览器改好，input 事件同步把 content 跟上，
+      if (!textarea) return false
+      // 原生通道：DOM 已经被浏览器改好，input 事件同步把正文跟上（onBodyInput），
       // 光标也已经在插入内容后面，不用再手动挪
-      if (this.insertNative(text)) {
+      if (this.insertNative(text, replaceSelection)) {
         this.updateCurrentLine()
-        return
+        return true
       }
+      const start = this.caretToContent(textarea.selectionStart)
+      const end = this.caretToContent(textarea.selectionEnd)
       this.content = this.content.slice(0, start) + text + this.content.slice(end)
       this.$nextTick(() => this.restoreLineCaret(start + text.length))
+      return false
     },
     // 原生删除，跟 insertText 一个路子。返回 false 表示走不通，调用方退回字符串拼接
     deleteNative() {
@@ -1626,41 +2463,88 @@ export default {
         return false
       }
     },
+        // 按住删除键：立刻删一个，然后按 Windows 的默认延迟和重复速度连着删。
+    // 自己管这个计时，不交给 v-repeat-click——那个指令的默认 delay/speed
+    // 跟 Windows 对不上，按住一下会删得比系统快一大截
+    startHoldRepeat() {
+      this.stopHoldRepeat()
+      this.deleteLastChar()
+      // 收尾的监听挂 window 捕获阶段，不只挂按钮自己。
+      // 触屏上按住手指挪开一点再抬起，pointerup 就送不到按钮上了（按钮身上的
+      // @pointerup / @pointerleave 一起收不到），连删停不下来，一直删下去。
+      // 鼠标一般挪不出按钮所以没这个毛病。挂在 window 上就跟按钮在不在那儿无关了
+      window.addEventListener('pointerup', this.stopHoldRepeat, true)
+      window.addEventListener('pointercancel', this.stopHoldRepeat, true)
+      window.addEventListener('blur', this.stopHoldRepeat, true)
+      this._holdDelay = window.setTimeout(() => {
+        this._holdRepeat = window.setInterval(() => this.deleteLastChar(), HOLD_REPEAT_INTERVAL)
+      }, HOLD_REPEAT_DELAY)
+    },
+    stopHoldRepeat() {
+      if (this._holdDelay) window.clearTimeout(this._holdDelay)
+      if (this._holdRepeat) window.clearInterval(this._holdRepeat)
+      window.removeEventListener('pointerup', this.stopHoldRepeat, true)
+      window.removeEventListener('pointercancel', this.stopHoldRepeat, true)
+      window.removeEventListener('blur', this.stopHoldRepeat, true)
+      this._holdDelay = 0
+      this._holdRepeat = 0
+    },
+    // 退格。删字、删换行符都让它照常来。
+    // 唯一插一手的是全文最开头：那儿光标前面没有字，删不掉什么，
+    // 正好拿它把这一行的编号摘掉。别的位置上不插手——用户在那儿是要删字
     deleteLastChar() {
       const textarea = this.getTextarea()
       if (!textarea) return
-      const { selectionStart: start, selectionEnd: end } = textarea
-      // 没选中文本就删光标前面那一个字，已经贴在最开头就没什么可删的
-      const from = start === end ? start - 1 : start
-      if (from < 0) return
+      const { selectionStart, selectionEnd } = textarea
+      const collapsed = selectionStart === selectionEnd
+      if (collapsed && selectionStart === 0 && this.markedLine(0)) {
+        this.dropMark(0)
+        return
+      }
       if (this.deleteNative()) {
         this.updateCurrentLine()
         return
       }
-      this.content = this.content.slice(0, from) + this.content.slice(end)
-      this.$nextTick(() => this.restoreLineCaret(start === end ? from : start))
+      // 走不通原生删除时退回拼接：照样在输入框那份上切（那边没有编号，
+      // 切的是换行符而不是编号那一截），切完走 commitBody 并回正文
+      if (selectionEnd < selectionStart) return
+      const from = collapsed ? selectionStart - 1 : selectionStart
+      if (from < 0) return
+      const body = this.bodyText
+      this.commitBody(
+        body.slice(0, from) + body.slice(selectionEnd),
+        (body.slice(0, from).match(/\n/g) || []).length,
+        from,
+      )
     },
-    // 从剪贴板读取内容并按光标位置组装新正文：有选中则替换，否则在光标处插入
-    // 剪贴板完全为空时返回 null，空格或换行视为有效内容原样粘贴
-    async buildContentWithPaste() {
-      const text = await navigator.clipboard.readText()
-      if (text == null || text === '') return null
+    // 从剪贴板读取内容并按光标位置组装新正文：有选中则替换，否则在光标处插入。
+    // 剪贴板完全为空时返回 null，空格或换行视为有效内容原样粘贴。
+    // 拼的是输入框那份（摘掉编号的），不是正文——粘进来的「1. 2.」那些编号
+    // 交给 mergeBody 收，和手敲出来的一个样
+    buildContentWithPaste(text) {
       const textarea = this.getTextarea()
       if (!textarea) return null
       const start = textarea.selectionStart
       const end = textarea.selectionEnd
+      const body = this.bodyText
+      const cursor = start + text.length
       return {
-        content: this.content.slice(0, start) + text + this.content.slice(end),
-        cursorPosition: start + text.length,
+        body: body.slice(0, start) + text + body.slice(end),
+        anchor: (body.slice(0, cursor).match(/\n/g) || []).length,
+        cursorPosition: cursor,
       }
+    },
+    // 把输入框那份（摘掉编号的）写回正文，顺手收下新敲出来的编号、重排那一节的编号。
+    // 粘贴、退格退到拼接那条路都走这儿——两边改的都是输入框那份
+    commitBody(body, anchor, cursor) {
+      this.content = mergeBody(body, this.content, anchor)
+      this.settleNumbers()
+      this.$nextTick(() => this.restoreLineCaret(this.caretToContent(cursor)))
     },
     // 从剪贴板粘贴，保留在对话框继续编辑
     async pasteFromClipboard() {
       try {
-        const result = await this.buildContentWithPaste()
-        if (!result) return
-        this.content = result.content
-        this.$nextTick(() => this.restoreLineCaret(result.cursorPosition))
+        await this.pasteClipboard()
       } catch (error) {
         console.error('Failed to read clipboard:', error)
       }
@@ -1670,13 +2554,23 @@ export default {
     // 那些草稿也在 handleClose 的保存范围里，只交回今天会把别的改动丢掉
     async pasteAndComplete() {
       try {
-        const result = await this.buildContentWithPaste()
-        if (!result) return
-        this.content = result.content
+        await this.pasteClipboard()
         this.handleClose()
       } catch (error) {
         console.error('Failed to read clipboard:', error)
       }
+    },
+    // 粘贴的共同那段：优先走原生插入通道，撤销栈记得住，Ctrl+Z 能把这一下撤掉。
+    // 通道走不通时（输入框没焦点之类）退回拼字符串——那条路没有原生撤销，
+    // 行为和以前一样，只是少了一步可撤销性
+    async pasteClipboard() {
+      const text = await navigator.clipboard.readText()
+      if (text == null || text === '') return false
+      if (this.insertAtCursor(text, true)) return true
+      const result = this.buildContentWithPaste(text)
+      if (!result) return false
+      this.commitBody(result.body, result.anchor, result.cursorPosition)
+      return true
     },
   },
 }
@@ -1738,10 +2632,11 @@ export default {
    干脆没有。这个面板开着十几秒就自动关，滚没滚动位置全靠肌肉记忆。
    滚还是照样能滚（滚轮、触摸都行） */
 .hw-card {
-  /* 小键盘那一列总共占多宽：键位整块 180，加它和左边那栏之间的 16px 间距。
+  /* 小键盘那一列总共占多宽：键位整块 156（跟 .numeric-keypad 的 width 同一个数），
+     加它和左边那栏之间的 16px 间距。
      推荐面板要往这一列底下伸（见 .phrase-panel），键位又要挡住伸过去的那一段
      （见 .numeric-keypad 的底色），两处取同一个值，改一处另一处跟着走 */
-  --keypad-space: 196px;
+  --keypad-space: 172px;
   scrollbar-width: none;
 }
 
@@ -1754,6 +2649,10 @@ export default {
    和左边的 16px 对齐 */
 .hw-panel {
   margin-top: -26px;
+  /* 编号栏和输入框是并排的两块，一起往左挪一挪：这一栏默认 16px 的左内边距，
+     挪到 6px 之后，编号栏和输入框的左边缘都离卡片左边近一点。
+     右内边距不动——右边那一列是键位整块，位置和它自己有关 */
+  padding-left: 6px;
 }
 
 /* 日期小标题：右侧放切换日期的按钮 */
@@ -1765,10 +2664,18 @@ export default {
   margin-bottom: 2px;
 }
 
-/* 编辑框撑满左栏宽度；内部不出滚动条 */
+/* 编辑区：左边一块编号栏、右边一块输入框，并排摆着，不叠在一起。
+   悬挂对齐就是靠这条栏给的：正文每一行都从栏右边开始，折行也是 */
 .hw-area {
   --v-textarea-scroll-bar-width: 0;
+  display: flex;
+  align-items: flex-start;
   width: 100%;
+}
+
+.hw-area :deep(.hw-field) {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .hw-area :deep(textarea) {
@@ -1798,11 +2705,106 @@ export default {
   pointer-events: none;
 }
 
-/* 一行一格；空行靠 <br> 撑高度。
-   折行规则不写死，从 backdrop 上继承（JS 全量抄的 textarea 实测值），
-   写死一个跟 textarea 不一样的，英文长串两边断行就错开 */
-.hw-area :deep(.hl-line) {
+/* 编号栏：输入框左边那一块，宽度在 JS 里给（见 copyHighlightStyle）。
+   它是 flow 里的一块，不盖在输入框上面；整块不吃点击，只有里面的按钮吃，
+   所以光标该落在输入框上就落输入框上 */
+.hw-area :deep(.hw-gutter) {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+  box-sizing: border-box;
+  pointer-events: none;
 }
+
+/* 一行一格。位置和高度都在 JS 里按上色层那一格给的——行会折行，
+   按行数算位置对不上 */
+.hw-area :deep(.hw-number-cell) {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+/* 编号／圆点本身。整格就是按钮：编号字那么小，点它得瞄准，
+   手一抖就点到输入框上去了（那里可是光标位置，点了就跳走）。
+   没有编号的行给一个暗点：有编号的行摆的是编号，两者占同一个位置，
+   切换的时候不会跳 */
+.hw-area :deep(.hw-number) {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* 编号栏本身留得窄（不然每行正文都白白让开一截），但按钮得够大点得着：
+     26px 过得去手指和鼠标（24px 是下限，再窄就容易点偏到输入框上去放光标）。
+     宽度锚在右边，多的那几像素往左探出去，
+     探到卡片自己的留白里去了，不挤正文 */
+  right: 0;
+  width: 26px;
+  pointer-events: auto;
+  appearance: none;
+  border: 0;
+  background: none;
+  margin: 0;
+  padding: 0 3px 0 0;
+  font: inherit;
+  font-size: 0.8em;
+  line-height: inherit;
+  color: rgba(127, 127, 127, 0.45);
+  text-align: right;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.hw-area :deep(.hw-number::before) {
+  content: '·';
+  opacity: 0;
+}
+
+.hw-area :deep(.hw-number:not(.hw-number-on):not(.hw-number-mark)::before) {
+  opacity: 1;
+}
+
+/* 标题行那一格：摆一个 #。# 只活在按钮上，输入框里那个不显示（见 buildHighlightHtml）。
+   前面那个 · 是「没编号」的意思，标题行不是「没编号」，所以得把它压掉 */
+.hw-area :deep(.hw-number-mark) {
+  color: rgba(127, 127, 127, 0.45);
+  font-weight: 700;
+}
+
+.hw-area :deep(.hw-number-on) {
+  color: rgba(127, 127, 127, 0.85);
+}
+
+/* 空行上的虚拟序号：「这行写上字就是第几号」。比真编号淡一档——
+   它还不是一条作业，只是提示；也不吃点击，那一行还没东西可编号 */
+.hw-area :deep(.hw-ghost) {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 26px;
+  box-sizing: border-box;
+  padding: 0 3px 0 0;
+  font-size: 0.8em;
+  line-height: inherit;
+  color: rgba(127, 127, 127, 0.3);
+  text-align: right;
+  white-space: nowrap;
+  overflow: visible;
+  user-select: none;
+  pointer-events: auto;
+  appearance: none;
+  border: 0;
+  background: none;
+  margin: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* 标题行那一格：摆一个 #。它和编号是同一个位置，所以小标题的正文
+   和编号行的正文一样从同一条栏后面起，折行也对得上。
+   高亮行本身不写样式：行高、折行规则全部从 backdrop 上继承
+   （JS 全量抄的 textarea 实测值），写死一个跟 textarea 不一样的，
+   英文长串两边断行就错开了 */
 
 /* 只改颜色不改字重，字一粗换行就对不上了 */
 .v-theme--light .hw-area :deep(textarea) {
@@ -2000,7 +3002,9 @@ export default {
 }
 
 .numeric-keypad {
-  width: 180px;
+  /* 键位整块多宽。键宽是这个数减掉两条 --key-gap 再三等分来的（见 .keypad-row），
+     想让键窄一点就改这里，间距一个字不动 */
+  width: 156px;
   display: flex;
   flex-direction: column;
   gap: var(--key-gap);
@@ -2014,6 +3018,9 @@ export default {
 .keypad-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
+  /* 横竖都用这一个间距：键与键、键与行透出同样宽的一条底色。
+     键变窄是靠 .numeric-keypad 收窄整块来的，不是靠加大这个间距——
+     间距一大，键就宽了，等于没变窄 */
   gap: var(--key-gap);
 }
 
@@ -2046,6 +3053,45 @@ export default {
   min-height: 34px;
   padding: 0 2px;
   font-size: 0.8rem;
+}
+/* 缩放条。整块钉在视口右下角，teleport 到 body（见模板里那段注释）——
+   它管的是视口，不是卡片，卡片缩了它不能跟着缩。
+   z-index 压在对话框浮层之上：对话框打开时它得能看见、能拖。
+   刻意不给底色：整页本来就暗，一条没有底的细滑块贴着右下角就够了，
+   加个底反而像多出来一块东西。淡入淡出走通用那套 .fade-*（见 transitions.scss） */
+.editor-zoom {
+  position: fixed;
+  /* 右边距连滚动条那条槽一起让开：html 上 scrollbar-gutter: stable 给滚动条
+     常驻预留了一条槽（见 styles/global.scss），fixed 的包含块是视口减掉这条槽，
+     而 100vw 含槽，两者之差正好是槽宽。没滚动条时差为 0，位置照旧 */
+  right: calc(16px + (100vw - 100%));
+  bottom: 16px;
+  z-index: 2600;
+  width: 132px;
+  /* 左右各留出半个拇指的位置：Vuetify 把拇指中心压在轨道两端，拇指会往外探出
+     半个（约 10px）。不留的话滑到 100% 时拇指尖探到条外，正好被右下角那条
+     滚动条压住。宽度走 border-box，留白从内容里让，条本身还是 132 */
+  padding-inline: 10px;
+}
+
+.editor-zoom-slider {
+  width: 100%;
+}
+
+/* 去掉 Vuetify 横向 slider 自带的 margin-inline:8px：它会把滑轨往右顶出 8px，
+   拇指跟着再往右探 8px，上面那圈留白就白留了。选择器带上 .v-slider 提一档权重，
+   跟 Vuetify 组件样式谁先加载无关 */
+.editor-zoom-slider.v-slider {
+  margin-inline: 0;
+}
+
+/* 百分比摆在滑块上，不是旁边另写一行。
+   摆旁边的话数字一变宽（60% → 100%）滑轨就被挤短一截，
+   滑到头的时候拇指会跟着跳一下，所以宽度给它定死 */
+.editor-zoom-value {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
 }
 </style>
 

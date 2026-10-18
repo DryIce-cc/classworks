@@ -13,7 +13,7 @@
         tag="div"
         class="grid-column"
       >
-        <div v-for="item in col" :key="item.key" class="grid-item" :data-key="item.key">
+        <div v-for="item in col" :key="item.key" class="grid-item" :data-key="item.key" :style="{ '--hw-num-col': `${cardNumCol(item)}em` }">
           <v-card
             border
             class="hw-card cursor-pointer"
@@ -41,19 +41,24 @@
                   <v-divider v-if="di > 0 || bi > 0" class="hw-divider" />
                   <!-- 日期有、或者这段有自定义小标题，就出小标题：后面的日子光有正文也是要出
                        「明天的作业」的，别因为没有自定义小标题就把它吞了。
-                       日期那几个字刷黄（编辑框里也是黄的，两边看齐），标题名用小标题
-                       自带的颜色代码染 -->
+                       日期那几个字刷黄（编辑框里也是黄的，两边看齐），标题名跟正文一样颜色 -->
                   <div v-if="day.date || block.custom" class="segment-label">
                     <span class="label-date">{{ day.date }}</span>
                     <span class="label-de">{{ day.date ? '的' : '' }}</span>
-                    <span class="label-name" :style="block.colorStyle">
+                    <span class="label-name">
                       <span v-if="block.day" class="label-date">{{ block.day }}</span>{{ block.title }}
                     </span>
                   </div>
                   <div class="hw-paragraph">
-                    <div v-for="(text, ti) in block.lines" :key="ti" class="hw-line">
-                      {{ text }}
-                    </div>
+                    <!-- 悬挂对齐：这一段里每一行的正文都从同一条竖线开始，
+                         序号右对齐挂在那条线左边，所以最长的那个序号也不会把
+                         正文顶开。无论有没有序号，正文都对齐 -->
+                    <div
+                      v-for="(line, ti) in block.lines"
+                      :key="ti"
+                      class="hw-line"
+                      :class="{ 'hw-line-num': line.number }"
+                    ><span v-if="line.number" class="hw-num">{{ line.number }}.</span>{{ line.text }}</div>
                   </div>
                 </template>
               </div>
@@ -100,6 +105,7 @@
 </template>
 
 <script>
+import { storedNumber } from '@/utils/homeworkList'
 import { parseHeadingLine } from '@/utils/homeworkReserve'
 
 // 窗口常年最大化，列数固定，不再按宽度分档
@@ -109,6 +115,13 @@ const IDLE_SCROLL_DELAY = 3000
 // 标题行：与文本层（homeworkText.js 的 isHeadingLine）同口径，
 // 行首允许空格/Tab 缩进，# 开头即标题，不再限空格个数、不限有无正文
 const HEADING_LINE = /^[ \t]*[#]/
+
+// 一个序号占多宽（单位 em）。数字按等宽数字估（0.62em），句点那一位加上（0.42em）。
+// 这只是个估算，跟正文字体对不上是常态：宁可让框比字宽一点，
+// 也不能让序号折行——序号一折，整行高度翻倍，看着就成了「序号和正文换了行」
+function numColEm(number) {
+  return String(number).length * 0.62 + 0.42
+}
 
 export default {
   name: 'HomeworkGrid',
@@ -145,8 +158,8 @@ export default {
       return Math.max(1, Math.min(count, MAX_COLUMNS))
     },
     // 渲染用的分列结果（透传方法，保证每次拿到的都是现算的）
-    columnItems() {
-      // 显式依赖版本号，有新测量结果时才重算
+columnItems() {
+      // 列分配依赖字号和布局，窗口一变就得重算
       void this.layoutVersion
       return this.assignColumns()
     },
@@ -285,9 +298,10 @@ export default {
       return this.solveColumns(heights).map((idxs) => idxs.map((i) => this.sortedItems[i]))
     },
 
-    // 回溯求最优分列：先让最高的那一列尽量矮，再让各列挨得更齐。
-    // 三级比较依次是「最高列高 → 列高极差 → 列高方差」，卡在第一级就不看后面两级，
-    // 所以不会为了好看去牺牲整体高度
+    // 回溯求最优分列：先让最高的那一列尽量矮，再让各列挨得更齐，
+    // 最后才在同样高的方案里挑「卡片按科目顺序往下接在同一列」的那种。
+    // 四级比较依次是「最高列高 → 列高极差 → 列高方差 → 科目顺序」，
+    // 卡在第一级就不看后面几级，所以不会为了顺序去牺牲整体高度
     solveColumns(heights) {
       const c = this.effectiveColumns
       const n = heights.length
@@ -298,8 +312,11 @@ export default {
       // 给个节点上限，超了就取搜索途中最好的那个，绝不卡住界面
       const budget = 250000
 
-      // 三级比较。方差除以列数是同一个常数，不影响比较，省掉
-      const measure = (loads) => {
+      // 四级比较。方差除以列数是同一个常数，不影响比较，省掉
+      // 第四级是「科目顺序」：同样的高度方案有好几种时，挑卡片按科目顺序
+      // 往下接在同一列的那种（第一科在最左列、第二科接着它下面，而不是跳到右边）。
+      // 越靠前的卡片权重越大，所以「能接就接」压过「反正都一样高，随便分」
+      const measure = (loads, assign) => {
         let max = 0
         let min = Infinity
         let variance = 0
@@ -308,11 +325,14 @@ export default {
           if (load < min) min = load
           variance += (load - avg) ** 2
         }
-        return [max, max - min, variance]
+        let order = 0
+        for (let i = 0; i < assign.length; i++) order += assign[i] * (n - i)
+        return [max, max - min, variance, order]
       }
       const better = (a, b) =>
         a[0] < b[0] - EPS || (a[0] < b[0] + EPS && a[1] < b[1] - EPS) ||
-        (a[0] < b[0] + EPS && a[1] < b[1] + EPS && a[2] < b[2] - EPS)
+        (a[0] < b[0] + EPS && a[1] < b[1] + EPS && a[2] < b[2] - EPS) ||
+        (a[0] < b[0] + EPS && a[1] < b[1] + EPS && a[2] < b[2] + EPS && a[3] < b[3] - EPS)
 
       // 贪心解当上界：一份按原始顺序放最矮列，一份按高度降序放最矮列（更接近最优）
       const greedy = (order) => {
@@ -341,8 +361,8 @@ export default {
       const seq = heights.map((_, i) => i)
       const byHeight = greedy([0, ...rest])
       const inOrder = greedy(seq)
-      let bestLoads = better(measure(byHeight.loads), measure(inOrder.loads)) ? byHeight : inOrder
-      let bestScore = measure(bestLoads.loads)
+      let bestLoads = better(measure(byHeight.loads, byHeight.assign), measure(inOrder.loads, inOrder.assign)) ? byHeight : inOrder
+      let bestScore = measure(bestLoads.loads, bestLoads.assign)
       let bestAssign = bestLoads.assign
 
       // 剩余卡片高度总和，用来判断「剩下的卡片总容量装不装得下」
@@ -364,7 +384,7 @@ export default {
       const search = (k, used) => {
         if (left-- <= 0) return
         if (k === m) {
-          const score = measure(loads)
+          const score = measure(loads, assign)
           if (better(score, bestScore)) {
             bestScore = score
             bestAssign = assign.slice()
@@ -451,20 +471,38 @@ export default {
     // 当天又没有标题行时不出小标题，只留分割线。
     // 一天一块（不是一段一块）是渲染层划点击区的依据：同一天的几段，
     // 连同分隔它们的线，点哪儿都该进那一天
+    // 这张卡片的编号栏多宽（--hw-num-col，挂在 .grid-item 上）。
+    // 序号就在这么宽的框里右对齐，宽度只按最长的那个号留，不额外留空——
+    // 留多了，短的那个号左边就空出一截，看着松散。
+    // 序号和正文之间那一个空格不算在框里，挂在正文那一侧（见 --hw-num-gap）
+    //
+    // 一张卡一个数，不做全板统一：全板统一的话，只要有一张卡出现了两位号，
+    // 别的卡就跟着被顶开，本来没有栏可言的那些卡左边空出一大片。
+    //
+    // 整张卡一个序号都没有时一栏都不留：本来就没有栏可言，照着别的卡留那么宽，
+    // 正文就被顶到中间去了。只留正文之间那一个空格，贴着卡片左边开始
+    cardNumCol(item) {
+      let max = 0
+      for (const segment of item.segments || []) {
+        for (const para of this.parseParagraphs(segment.content)) {
+          for (const line of para.lines) {
+            if (line.number) max = Math.max(max, numColEm(line.number))
+          }
+        }
+      }
+      return max
+    },
     buildDays(item) {
       const days = []
       for (const segment of item.segments || []) {
         const blocks = this.parseParagraphs(segment.content).map((para) => {
           // 没小标题的那一段就叫「作业」，没有颜色、没有自己的日期
-          const head = para.heading || { day: '', gap: '', title: '作业', color: '' }
+          const head = para.heading || { day: '', gap: '', title: '作业' }
           return {
             custom: para.heading !== null,
             day: head.day,
             title: head.gap + head.title,
-            // 颜色代码直接用作者写的那一串（#3FCC00 里不带 #），
-            // 没写就空着，模板那边不给 .label-name 绑颜色
-            colorStyle: head.color ? { color: `#${head.color}` } : null,
-            lines: para.lines,
+lines: para.lines,
           }
         })
         // 空的段（比如正文只剩空行）不占一块
@@ -486,11 +524,13 @@ export default {
       if (content == null) return []
       const paras = []
       let current = null
+      let seq = 0
       const push = () => {
         if (current && (current.heading !== null || current.lines.length)) {
           paras.push(current)
         }
         current = null
+        seq = 0
       }
       for (const raw of String(content).replace(/\r\n?/g, '\n').split('\n')) {
         if (raw.trim() === '') {
@@ -504,11 +544,21 @@ export default {
             ? { heading: head, lines: [] }
             // 不是标题行也要兜住（HEADING_LINE 和它按同一口径判定，
             // 这里只是不把一条解析失败当成崩溃的理由）
-            : { heading: { day: '', gap: '', title: raw.replace(/^[ \t]*#+/, '').trim(), color: '' }, lines: [] }
+            : { heading: { day: '', gap: '', title: raw.replace(/^[ \t]*#+/, '').trim() }, lines: [] }
           continue
         }
         if (!current) current = { heading: null, lines: [] }
-        current.lines.push(raw)
+        // 正文行带上编号（{ number, text }）：模板靠它做悬挂对齐。
+        // 拆的规矩和存储那边是同一个函数，两边各认一遍早晚会切出两条不一样的线
+        const { number, prefix } = storedNumber(raw)
+        const text = prefix ? raw.slice(prefix) : raw
+        // 光秃秃一个号的行（「3.」）：什么都不写就不该在板上摆一条出来。
+        // 那是编辑时留着接着写的位置，不是已经有一条作业了
+        if (!text.trim()) continue
+        // 板上编号跟编辑时同一个口径：每段里从上到下连续。
+        // 存档里可能留着旧乱号（中间的空行占着号），板上一抹就露 1. 3. 的断层，
+        // 该按连续摆出来，别把断层摆给读者看
+        current.lines.push({ number: number ? ++seq : 0, text })
       }
       push()
       return paras
@@ -548,8 +598,11 @@ export default {
 }
 
 /* 小标题：日期 + 自定义小标题（或「的作业」），各处外观一致。
-   压暗的那 0.6 只留给标题名（见 .label-name），日期那几个字要亮着刷黄 */
+   默认灰走 --hw-label-gray 这个变量，不挂 opacity：这一格的颜色是用户在小标题
+   里自己写的代码绑上来的，外层 opacity 会把那个颜色一起淡掉（连里面那几个黄字
+   一起淡），用户挑的色就变了。压暗只落在「没写颜色代码时的默认灰」上 */
 .segment-label {
+  --hw-label-gray: #6b6b6b;
   display: flex;
   align-items: baseline;
   min-width: 0;
@@ -569,16 +622,21 @@ export default {
   color: #ffeb3b;
 }
 
-/* 自定义小标题过长时单行省略。颜色由模板按小标题里写的颜色代码绑上来，
-   没写就靠这里的压暗和别的灰字拉开 */
+/* 自定义小标题过长时单行省略 */
 .label-name {
   flex: 0 1 auto;
   min-width: 0;
-  opacity: 0.6;
+  color: var(--hw-label-gray);
   overflow: hidden;
   text-overflow: ellipsis;
   /* pre 才能保住小标题里多写的空格，同时保持单行 */
   white-space: pre;
+}
+
+/* 深色主题下默认灰要跟着提亮，不然小标题名比正文还暗，读不出来。
+   主题类挂在更外层，写法跟编辑框那边一致 */
+.v-theme--dark .segment-label {
+  --hw-label-gray: #bdbdbd;
 }
 
 /* 内容块之间的分割线：v-divider 靠 opacity: var(--v-border-opacity)（0.12）压暗，
@@ -600,5 +658,42 @@ export default {
   line-height: 1.5;
   padding: 0;
   margin: 0;
+}
+
+/* 有编号的行做悬挂对齐：首行（编号）顶格，往后的每一段折行都从编号后面那一列开始。
+   编辑框里也一样——那边是靠左边那条编号栏给的（输入框给不了逐行缩进，
+   详见 HomeworkEditDialog 的编号栏），两边看齐 */
+/* 悬挂对齐：每一行的正文都从同一条竖线（--hw-num-col）开始，
+   折行也对齐那一条。没编号的行同样让出这一条，整段的正文才对得齐。
+   有序号的行用 text-indent 把序号顶到那条线左边去 */
+.hw-line {
+  --hw-num-gap: 0.5em;
+  padding-left: calc(var(--hw-num-col, 0) + var(--hw-num-gap));
+}
+
+.hw-line-num {
+  text-indent: calc(-1 * (var(--hw-num-col, 0) + var(--hw-num-gap)));
+}
+
+/* 编号占住编号栏那一列，右对齐：贴着正文那一侧排，
+   位数少的不会杵在左边留一截空。宽度和上面那个 --hw-num-col 严格相等，
+   不然正文起始位置和折行位置就差一截
+   压成灰的，不跟正文抢眼——它是标记，不是内容。用实色不用 opacity：
+   外面要是有人挂透明度，这一格跟着一起淡就正好把编号藏没了 */
+.hw-num {
+  display: inline-block;
+  width: var(--hw-num-col, 0);
+  /* 右边那一个空格靠 margin-right 让出来，不能写进 padding：
+     写进 padding 的话这一段宽度会被 padding-left 算两次，有序号的行就比
+     没序号的行多让出一个空格——两种行的正文就对不齐了 */
+  margin-right: var(--hw-num-gap, 0);
+  /* nowrap 是保命的：编号一旦窄到装不下，它会在自己的框里折成两行，
+     整行高度跟着翻倍，看上去就成了「序号和正文换了行」。
+     宁可让它顶出去一点，也不能让它折行 */
+  white-space: nowrap;
+  color: #808080;
+  /* text-indent 会继承给行内元素，不压回去的话编号自己也会往左顶一格 */
+  text-indent: 0;
+  text-align: right;
 }
 </style>

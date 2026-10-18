@@ -1,6 +1,6 @@
 // 预定与日期：日子词的解析、预定标记的拼装落实、单个标题的改日期。
-// 也管小标题行开头那一截（# 和可选的颜色代码，见 parseHeadingLine）——
-// 日期、颜色、标题名都从这里切出来，编辑框和展示板两边都拿它上色
+// 也管小标题行开头那一截（# 和它后面那个空格，见 parseHeadingLine）——
+// 日期和标题名都从这里切出来，编辑框和展示板两边都拿它上色
 // 只认「# 哪天」这一层，不碰选区和面板
 // （原 homeworkPhrases.js 拆分出来，函数体原样搬运）
 
@@ -27,26 +27,13 @@ const DAY_TAIL = '[ 　]?的?[ 　]?[：:]?[ 　]?'
 // 「#明天的通知」复制出来是「#后天的通知」，把「的」也摘了就成了「#后天通知」
 const DAY_ONLY = DAY_PATTERN + '[ 　]?[：:]?[ 　]?'
 
-// 小标题的染色代码：三位（#F00）或六位（#3FCC00）十六进制，
-// 必须全大写（#3fcc00 不认，那是标题的第一个字）。
-// 三条规矩都是硬条件，少一条就不当颜色：
-//   紧跟在 # 后面，前面不留空格（# 3FCC00 里的 3FCC00 是标题的第一个字）
-//   后面恰好一个空格（#3FCC00资料 里的 3FCC00 也是标题的一部分，不是颜色）
-//   全大写
-// 这么挑是为了不误伤：标题里随便写几个十六进制字母是很正常的事
-// 六位写在前面：三位那一支会先吃掉 6 位代码的头三个字母，虽然正则会回退去试六位，
-// 但让它一次就匹配对，少一层回溯也少一处以后要照应的分支
-const COLOR_CODE = '(?:[0-9A-F]{6}|[0-9A-F]{3})'
+// 小标题行开头那一截：缩进 + # + 最多一个空格。
+// 曾经这里还认一段六位十六进制的染色代码（#3FCC00 通知），那个功能已经去掉了，
+// 现在 # 后面那几个字母就是标题名的一部分，不再当颜色
+export const HEADING_PREFIX = /^[ \t]*#[ \t　]?/
 
-// 小标题行开头那一截：缩进 + # + （颜色代码和一个空格）+ 最多一个空格。
-// 两个分支是有先后的：先试带颜色的那种，试不中才退回「# 后面最多一个空格」。
-// 反过来写（先空格再颜色）就会把「# 3FCC00 …」也当成染色的，那条规矩就破了
-const HEADING_PREFIX = new RegExp(
-  '^[ \\t]*#(?:(' + COLOR_CODE + ')[ 　]|[ \\t　]?)',
-)
-
-// 这一行是不是「某一天」的小标题：# 开头，剥掉标记和颜色代码以后
-// 后面紧跟着那个日子词。# 周四的作业、# 周四、# 下周四、#3FCC00 下周四 都算
+// 这一行是不是「某一天」的小标题：# 开头，剥掉标记以后
+// 后面紧跟着那个日子词。# 周四的作业、# 周四、# 下周四 都算
 function isDayHeading(line, word) {
   const head = parseHeadingLine(line)
   return !!head && head.word === word
@@ -90,11 +77,10 @@ function endOfFreeParagraph(day) {
 //   有小标题 → 接在最后一个同名小标题那一节的最后。同名的一个都没有才新起一节。
 //   没小标题 → 接在最后一个不受小标题管着的段落最后。这种段落一个都没有才接全文最后。
 // 空行统一交给 tidyBlankLines 理，这里只管插在哪。返回新数组，不改动接进去的那个。
-// 新起的那一节，标题上还带着这一块原来那个颜色代码——搬一次日期不该把颜色弄丢
-function spliceIntoDay(day, heading, lines, color) {
+function spliceIntoDay(day, heading, lines) {
   const at = heading ? endOfNamedSection(day, heading) : endOfFreeParagraph(day)
   if (at < 0) {
-    const head = heading ? (color ? `#${color} ${heading}` : `#${heading}`) : ''
+    const head = heading ? `#${heading}` : ''
     return [...day, '', ...(head ? [head] : []), ...lines]
   }
   return [...day.slice(0, at), ...lines, ...day.slice(at)]
@@ -106,7 +92,7 @@ function spliceIntoDay(day, heading, lines, color) {
 // spliceIntoDay 返回的是新数组（不改动它接进去的那个），所以这里必须接住返回值
 export function assembleDayContent(existing, blocks) {
   let lines = existing.trim().split('\n')
-  for (const block of blocks) lines = spliceIntoDay(lines, block.heading, block.lines, block.color)
+  for (const block of blocks) lines = spliceIntoDay(lines, block.heading, block.lines)
   return lines.join('\n')
 }
 
@@ -118,8 +104,7 @@ export function assembleDayContent(existing, blocks) {
 export function scopeTitle(scope) {
   const parsed = parseReserveLine(scope)
   if (parsed) return parsed.heading || '作业'
-  // 不是日期标题（#通知、#3FCC00 通知）：剥掉开头那一截就是节名。
-  // 颜色代码一并摘掉，不然面板上会摆出「作为 明天的3FCC00 通知」这种话
+  // 不是日期标题（#通知）：剥掉开头那一截就是节名
   const head = parseHeadingLine(scope)
   return head ? head.title : scope.replace(/^[ \t]*#[ \t]?/, '').trim()
 }
@@ -140,8 +125,7 @@ export function headingTitleStart(line) {
 }
 
 // 复制一个小标题并把日子换成目标那天（# 通知 → # 明天的通知）。
-// 复制的是用户写的标题，他 # 后面留的那个空格原样带着走；
-// 染过色的一节连颜色代码一起带（#3FCC00 通知 → #3FCC00 明天的通知）。
+// 复制的是用户写的标题，他 # 后面留的那个空格原样带着走。
 // 空标题（# 后面什么都没有）配默认名：不然只剩「#明天的」这种半截标记
 export function retargetHeading(line, word) {
   const head = parseHeadingLine(line)
@@ -161,8 +145,7 @@ export function retargetHeading(line, word) {
 // 「#明天」「#下周一：」这种没有标题的也得认，不然改完会变成「#后天的明天」。
 // strip 为真——点的是正在编辑的那天——就把日期信息摘掉，不是来回切：
 // 已经写着日期的摘掉，本来就没有的什么都不发生；否则加上/换成 word 那一天。
-// 永远不补「：」——用户没写过的标点不替他加。
-// 颜色代码不是日期的一部分，摘日期的时候它留着
+// 永远不补「：」——用户没写过的标点不替他加
 export function retargetDayHeading(line, word, strip) {
   const head = parseHeadingLine(line)
   if (!head) return line
@@ -197,15 +180,14 @@ export function retargetScopeHeading(line, word, strip) {
 }
 
 // 小标题行拆成几段。不是标题行（不以 # 开头）返回 null：
-//   prefix  开头那一截：缩进 + # + 颜色代码 + 空格，一个字都不多不少
-//   color   颜色代码（六位十六进制，不带 #），没有就空串
+//   prefix  开头那一截：缩进 + # + 空格，一个字都不多不少
 //   word    日子词（明天 / 下周二 …），这一行没写日期就空串
 //   day     该刷黄的那几个字：日子词加上紧跟的那个「的」
 //   gap     日期词后面还没算进标题的零碎（「：」和空格），算 # 那段的一部分
 //   title   剩下的标题名，两头去空格
 //   titleStart 标题名从整行的第几个字开始（改完标题要把光标放回原来的相对位置）
-// 日期、颜色、标题名三段的边界都在这里定死，编辑框的高亮层和展示板的标题色
-// 都按它切——两边各切一遍的话，迟早会切出两条不一样的线来
+// 日期和标题名两段的边界都在这里定死，编辑框的高亮层和展示板都按它切——
+// 两边各切一遍的话，迟早会切出两条不一样的线来
 export function parseHeadingLine(line) {
   const prefix = HEADING_PREFIX.exec(line)
   if (!prefix) return null
@@ -215,11 +197,10 @@ export function parseHeadingLine(line) {
   // 不是标题的一部分）；其中刷黄的只有日子词和紧跟的那个「的」
   const tail = word ? new RegExp('^' + DAY_TAIL).exec(rest.slice(word.length))?.[0] || '' : ''
   const particle = (/^[ 　]?的/.exec(tail) || [])[0] || ''
-  // 标题名从「# + 颜色代码 + 空格 + 日子词 + 零碎」之后开始
+  // 标题名从「# + 空格 + 日子词 + 零碎」之后开始
   const titleStart = prefix[0].length + word.length + tail.length
   return {
     prefix: prefix[0],
-    color: prefix[1] || '',
     word,
     day: word + particle,
     gap: tail.slice(particle.length),
@@ -233,7 +214,7 @@ export function parseHeadingLine(line) {
 //   「的」后面是「作业」或「作业：」→ 普通预定，搬完把标记行删掉
 //   「的」后面是别的（当作小标题）→ 搬过去后在那天写成「#标题」+ 内容
 //   「的」和「：」后面什么都没有 → 也是预定，只是不给它起目标标题
-// 染过色的（#3FCC00 明天的通知）照样是标记：颜色代码在 # 后面就被摘掉了，
+// 带小标题的预定（# 明天的通知）照样是标记：# 后面那一截在
 // 不然这一节的内容就不跟着搬，会留在原来那天
 export function parseReserveLine(line) {
   const head = parseHeadingLine(line)
@@ -299,7 +280,7 @@ export function parseReservations(content, today, ownDate = '') {
     // 留个空标题没意义，整行去掉；有名字的保留顺序，只摘日期
     if (ownDate && dateString === ownDate) {
       if (parsed.heading) {
-        // 开头那一截原样带着（# 和颜色代码都是这一节的样子，不该在这儿丢）
+        // 开头那一截原样带着（# 和它后面那个空格都是这一节的样子，不该在这儿丢）
         rest.push((parseHeadingLine(markLine)?.prefix || '#') + parsed.heading)
       }
       index++
@@ -313,13 +294,10 @@ export function parseReservations(content, today, ownDate = '') {
     // 凭空多出来的一节空白——rest 是直接拿去当那天正文的（不再过一遍 tidy），
     // 前后都还有内容的时候尤其明显
     if (index < lines.length && lines[index].trim() === '') index++
-    // 颜色代码跟着这一块走：搬过去之后要在那天重新起一个小标题，
-    // 那个标题得还是这个颜色（见 assembleDayContent → spliceIntoDay）
     blocks.push({
       dateString,
       lines: moved,
       heading: parsed.heading,
-      color: parseHeadingLine(markLine)?.color || '',
     })
   }
   return { blocks, rest: rest.join('\n') }

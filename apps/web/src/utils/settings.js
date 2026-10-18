@@ -1,4 +1,4 @@
-// 设置项目前只有「字体大小」一项，存 localStorage；改动通过事件广播给各页面
+// 设置项存 localStorage；改动通过事件广播给各页面
 // 科目清单不在这里，默认值与规整都在 utils/subjects.js
 
 const SETTINGS_STORAGE_KEY = 'Classworks_settings'
@@ -11,6 +11,12 @@ const settingsDefinitions = {
     type: 'number',
     default: 18,
     validate: (value) => value >= 16 && value <= 32,
+  },
+  // 编辑对话框整体缩放（百分比）。只往小缩：放大不如调字体设置来得正经
+  'editor.zoom': {
+    type: 'number',
+    default: 100,
+    validate: (value) => value >= 50 && value <= 100,
   },
 }
 

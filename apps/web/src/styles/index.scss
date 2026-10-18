@@ -30,7 +30,19 @@
   transition: all 250ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.grid-item .v-card:hover {
+// 悬停效果在鼠标静止时被收掉，做法是给这条规则加一道门：
+// html 上没有 .hw-hover-idle（也就是鼠标还在动）时才生效。
+//
+// 为什么是「让 hover 规则不生效」而不是「另写一份平时的值盖上去」：
+// 后面那种写法得把每个元素的静止值再抄一遍，Vuetify 卡片那一层的阴影是好几层
+// rgba 叠出来的，抄不全、抄错了还看不出来。这么写就不用抄——规则不匹配，
+// 元素自然落回它本来那条规则长什么样。
+//
+// 新增 hover 效果的时候，记得同样套上 html:not(.hw-hover-idle)。
+// 漏了的那一条，鼠标静止之后还会亮着——这是这套做法唯一的代价。
+//
+// 只管悬停，按下的效果一条都没碰（:active 不受这个门管）
+html:not(.hw-hover-idle) .grid-item .v-card:hover {
   transform: scale(1.01);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
 }
@@ -83,7 +95,35 @@
   opacity: 0.8;
 }
 
-.empty-subject-card:not(:disabled):hover {
+// 空科目卡片：鼠标静止三秒后悬停收掉（做法见上面 .grid-item 那段的注释）
+html:not(.hw-hover-idle) .empty-subject-card:not(:disabled):hover {
   opacity: 1;
   transform: scale(1.02);
+}
+
+// 设置页的科目卡：同上，套上那道门。
+// 放在全局这里而不是组件的 scoped 样式里——scoped 会给 html 也套上本组件的
+// scope 属性，那条全局选择器就永远不匹配了
+html:not(.hw-hover-idle) .subject-card:hover {
+  opacity: 1;
+}
+
+// Vuetify 自己那套悬停：卡片、按钮、chip、输入框悬停时蒙版会变亮一点，
+// 看着像「被点亮了」。那个蒙版不是 ::after，是真实的一个子元素
+// （.v-card__overlay / .v-btn__overlay / .v-field__overlay …），
+// 按元素名去覆盖就得一个个列，Vuetify 一升级又漏。
+//
+// 改成把它算这个透明度的那颗变量整个归零：
+//     .v-card:hover > .v-card__overlay { opacity: calc(var(--v-hover-opacity) * …) }
+// 这颗变量是主题给的（.v-theme--dark 上写着 0.04），往下继承，谁都没重新赋值过。
+// 归零之后所有组件的悬停蒙版一起淡掉，新增组件不用管。
+//
+// 只动悬停这颗，.v-activated-opacity（选中／展开）那几颗没碰，
+// .v-field 那种「底色本来就有的」也不是靠它，那部分照常
+// 这颗变量写在三处：:root、.v-theme--light、.v-theme--dark。后两个是 Vuetify
+// 挂在应用根上的主题类，卡片就是从那儿继承到 0.04 的——所以光改 html 上那一份
+// 没用，得把主题类自己那份也按下去，否则组件照旧继承 0.04
+html.hw-hover-idle,
+html.hw-hover-idle :is(.v-theme--light, .v-theme--dark) {
+  --v-hover-opacity: 0;
 }

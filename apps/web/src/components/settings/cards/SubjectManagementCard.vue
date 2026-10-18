@@ -568,9 +568,10 @@ export default {
   transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.subject-card:hover {
-  opacity: 1;
-}
+/* 鼠标静止之后收掉悬停：这条本来是这里的 .subject-card:hover，
+   现在挪到 styles/index.scss 里，写成 html:not(.hw-hover-idle) .subject-card:hover。
+   不能留在这儿——这是 scoped 样式，全局选择器里的 html 会被套上本组件的
+   scope 属性，永远匹配不上 */
 
 /* 拖起来的那张留在网格里占着坑（visibility 不占布局，位置不会塌），
    跟着指针走的是外面那个小片。这张就只等着被 TransitionGroup 挪到新格子 */

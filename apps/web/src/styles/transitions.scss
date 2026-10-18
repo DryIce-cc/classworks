@@ -74,12 +74,15 @@ $standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
     opacity 200ms $standard-easing,
     transform 200ms $standard-easing,
     box-shadow 200ms $standard-easing;
+}
 
-  &:hover {
-    // 抬升只留一点点，别跟上面作业卡片一个量级
-    transform: translateY(-2px) scale(1.01);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  }
+// 悬停样式套上 html:not(.hw-hover-idle)：鼠标静止之后这条不生效，元素落回
+// 上面那个 .empty-subject-card，抬升和阴影全收。做法为什么是这样，
+// 见 styles/index.scss 里 .grid-item 那段的注释
+html:not(.hw-hover-idle) .empty-subject-card:hover {
+  // 抬升只留一点点，别跟上面作业卡片一个量级
+  transform: translateY(-2px) scale(1.01);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
 // 待添加科目列表动画（TransitionGroup name="v-list"）：淡入即可，不掺位移。
