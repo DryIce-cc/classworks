@@ -13,12 +13,12 @@
         tag="div"
         class="grid-column"
       >
-        <div v-for="item in col" :key="item.key" class="grid-item" :data-key="item.key" :style="{ '--hw-num-col': `${cardNumCol(item)}em` }">
+        <div v-for="item in col" :key="item.key" class="grid-item" :data-key="item.key">
           <v-card
             border
             class="hw-card cursor-pointer"
             height="100%"
-            rounded="xl"
+            rounded="md"
             @click="$emit('open-dialog', item.key)"
           >
             <!-- 科目名独占一行，小标题按段落正常单独显示。
@@ -50,15 +50,15 @@
                     </span>
                   </div>
                   <div class="hw-paragraph">
-                    <!-- 悬挂对齐：这一段里每一行的正文都从同一条竖线开始，
-                         序号右对齐挂在那条线左边，所以最长的那个序号也不会把
-                         正文顶开。无论有没有序号，正文都对齐 -->
+                    <!-- 悬挂只给有序号的行：序号占一格、文本悬挂缩进，折行对齐到序号后面；
+                         没序号的行走普通的、顶格，不占格 -->
                     <div
                       v-for="(line, ti) in block.lines"
                       :key="ti"
                       class="hw-line"
-                      :class="{ 'hw-line-num': line.number }"
-                    ><span v-if="line.number" class="hw-num">{{ line.number }}.</span>{{ line.text }}</div>
+                      :class="{ 'hw-line-num': line.number && !block.hideNumber }"
+                      :style="line.number && !block.hideNumber ? { '--hw-line-num-col': `${line.col}em` } : null"
+                    ><span v-if="line.number && !block.hideNumber" class="hw-num">{{ line.number }}.</span>{{ line.text }}</div>
                   </div>
                 </template>
               </div>
@@ -84,7 +84,7 @@
             v-for="subject in addableSubjects"
             :key="subject.name"
             border
-            rounded="xl"
+            rounded="md"
             class="empty-subject-card"
             @click="openAddDialog(subject)"
           >
@@ -110,6 +110,7 @@ import { splitContent } from '@/utils/homeworkList'
 import { parseHeadingLine } from '@/utils/homeworkReserve'
 import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
 import { assignColumns as distributeColumns } from '@/utils/masonry'
+import { captureElement } from '@/utils/screenshot'
 
 // 窗口常年最大化，列数固定，不再按宽度分档
 const MAX_COLUMNS = 3
@@ -164,8 +165,8 @@ export default {
       void this.layoutVersion
       return this.assignColumns()
     },
-    // 每张卡各段正文的解析结果（按段切开），cardNumCol 和 buildDays 共用这一份。
-    // 两个方法都在模板里逐帧调用，各解析一遍等于每帧白算一次；
+    // 每张卡各段正文的解析结果（按段切开），buildDays 共用这一份。
+    // buildDays 在模板里逐帧调用，各解析一遍等于每帧白算一次；
     // 这里用 computed 缓存：依赖 sortedItems（含各卡的 segments.content），
     // 正文一变自然失效重算，不会读到上一版内容。
     // key 用卡片对象本身而不是 item.key，同一科目出现两张卡时也不会互相串
@@ -256,6 +257,12 @@ export default {
       this.$emit('open-dialog', item.key, { date: day.dateString })
     },
 
+    // 截图取景范围只到卡片区：不含底部那排「添加作业」，也不含顶部工具栏。
+    // 截图方法由页面去调，这里只把 DOM 节点交出去
+    captureCards() {
+      return captureElement(this.$refs.gridContainer)
+    },
+
     // 该科目在展示板上已经有内容卡片了没有：用来区分「点击添加作业」和「继续添加作业」
     hasContent(name) {
       return this.sortedItems.some((item) => item.key === name)
@@ -326,42 +333,26 @@ export default {
     // 当天又没有标题行时不出小标题，只留分割线。
     // 一天一块（不是一段一块）是渲染层划点击区的依据：同一天的几段，
     // 连同分隔它们的线，点哪儿都该进那一天
-    // 这张卡片的编号栏多宽（--hw-num-col，挂在 .grid-item 上）。
-    // 序号就在这么宽的框里右对齐，宽度只按最长的那个号留，不额外留空——
-    // 留多了，短的那个号左边就空出一截，看着松散。
-    // 序号和正文之间那一个空格不算在框里，挂在正文那一侧（见 --hw-num-gap）
-    //
-    // 一张卡一个数，不做全板统一：全板统一的话，只要有一张卡出现了两位号，
-    // 别的卡就跟着被顶开，本来没有栏可言的那些卡左边空出一大片。
-    //
-    // 整张卡一个序号都没有时一栏都不留：本来就没有栏可言，照着别的卡留那么宽，
-    // 正文就被顶到中间去了。只留正文之间那一个空格，贴着卡片左边开始
-    cardNumCol(item) {
-      let max = 0
-      for (const paras of this.parsedSegments(item)) {
-        for (const para of paras) {
-          for (const line of para.lines) {
-            if (line.number) max = Math.max(max, numColEm(line.number))
-          }
-        }
-      }
-      return max
-    },
     buildDays(item) {
       const days = []
       const segments = item.segments || []
-      // 与 segments 一一对应，跟 cardNumCol 用的是同一份解析结果
+      // 与 segments 一一对应，解析结果只算一遍
       const parsed = this.parsedSegments(item)
       for (let index = 0; index < segments.length; index++) {
         const segment = segments[index]
         const blocks = (parsed[index] || []).map((para) => {
           // 没小标题的那一段就叫「作业」，没有颜色、没有自己的日期
           const head = para.heading || { day: '', gap: '', title: '作业' }
+          // 收集所有带序号的行
+          const numberedLines = para.lines.filter(line => line.number)
+          // 如果整个作业卡片只有一个带序号的行，则不显示该序号
+          const hideNumber = numberedLines.length === 1
           return {
             custom: para.heading !== null,
             day: head.day,
             title: head.gap + head.title,
             lines: para.lines,
+            hideNumber,
           }
         })
         // 空的段（比如正文只剩空行）不占一块
@@ -429,7 +420,10 @@ export default {
         // 该按连续摆出来，别把断层摆给读者看。
         // 这里不能用文本层的 renumberAll 等价替换：它会把上面那种光杆编号行
         // 也算成一条作业、占掉一个号，而板上那行根本不显示，两边的号就对不上了
-        current.lines.push({ number: number ? ++seq : 0, text })
+        // col 是该序号占一格需要的宽度（em），模板靠它给这一行挂悬挂缩进，
+        // 在解析期就算好存进行对象里，模板不用再去调用纯函数
+        const seqNumber = number ? ++seq : 0
+        current.lines.push({ number: seqNumber, text, col: seqNumber ? numColEm(seqNumber) : 0 })
       }
       push()
       return paras
@@ -531,32 +525,23 @@ export default {
   margin: 0;
 }
 
-/* 有编号的行做悬挂对齐：首行（编号）顶格，往后的每一段折行都从编号后面那一列开始。
-   编辑框里也一样——那边是靠左边那条编号栏给的（输入框给不了逐行缩进，
-   详见 HomeworkEditDialog 的编号栏），两边看齐 */
-/* 悬挂对齐：每一行的正文都从同一条竖线（--hw-num-col）开始，
-   折行也对齐那一条。没编号的行同样让出这一条，整段的正文才对得齐。
-   有序号的行用 text-indent 把序号顶到那条线左边去 */
-.hw-line {
-  --hw-num-gap: 0.5em;
-  padding-left: calc(var(--hw-num-col, 0) + var(--hw-num-gap));
-}
-
+/* 悬挂只给有序号的行：序号占一格、正文从这个格子后面开始，
+   这一行的折行也对齐到序号后面。没序号的行不占格，普通顶格写 */
 .hw-line-num {
-  text-indent: calc(-1 * (var(--hw-num-col, 0) + var(--hw-num-gap)));
+  --hw-num-gap: 0.5em;
+  padding-left: calc(var(--hw-line-num-col, 0) + var(--hw-num-gap));
+  text-indent: calc(-1 * (var(--hw-line-num-col, 0) + var(--hw-num-gap)));
 }
 
-/* 编号占住编号栏那一列，右对齐：贴着正文那一侧排，
-   位数少的不会杵在左边留一截空。宽度和上面那个 --hw-num-col 严格相等，
-   不然正文起始位置和折行位置就差一截
+/* 编号占一格右对齐：贴着正文那一侧排。宽度由模板按这一行的号现算，
+   与 --hw-line-num-col 严格相等，不然正文起始位置和折行位置就差一截
    压成灰的，不跟正文抢眼——它是标记，不是内容。用实色不用 opacity：
    外面要是有人挂透明度，这一格跟着一起淡就正好把编号藏没了 */
 .hw-num {
   display: inline-block;
-  width: var(--hw-num-col, 0);
+  width: var(--hw-line-num-col, 0);
   /* 右边那一个空格靠 margin-right 让出来，不能写进 padding：
-     写进 padding 的话这一段宽度会被 padding-left 算两次，有序号的行就比
-     没序号的行多让出一个空格——两种行的正文就对不齐了 */
+     写进 padding 的话这一段宽度会被 padding-left 算两次，正文折行位置就错了 */
   margin-right: var(--hw-num-gap, 0);
   /* nowrap 是保命的：编号一旦窄到装不下，它会在自己的框里折成两行，
      整行高度跟着翻倍，看上去就成了「序号和正文换了行」。

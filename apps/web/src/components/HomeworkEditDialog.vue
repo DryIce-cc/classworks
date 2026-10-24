@@ -1011,7 +1011,9 @@ export default {
       const token = ++this._previewToken
       const payload = await this.buildPreviewPayload()
       if (token !== this._previewToken) return
-      this.$emit('preview', payload)
+      // 第二个参数：这次预览相对打开面板时的初始内容有没有真实改动。
+      // 刚打开那几轮种子预览没改过，调用方据此不清「已截图」哈希
+      this.$emit('preview', payload, this.changedDrafts().length > 0)
     },
     // 改动过的日期：正文和读进来时不一致就算改过（首尾空白不算改动）。
     // 存进去之前重排一遍：空行上挂着的号顺手清掉（它不是一条作业），

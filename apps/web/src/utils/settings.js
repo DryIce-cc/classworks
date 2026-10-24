@@ -24,6 +24,11 @@ const settingsDefinitions = {
     default: 100,
     validate: (value) => value >= 50 && value <= 100,
   },
+  // 最近一次截图的哈希：日期 + 科目 + 作业全文。用于「已截图」标记判等
+  'screenshot.lastHash': {
+    type: 'string',
+    default: '',
+  },
 }
 
 class SettingsManagerClass {

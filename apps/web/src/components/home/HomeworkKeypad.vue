@@ -153,7 +153,7 @@
         </v-btn>
         <!-- @mousedown.prevent 不能少：这一下失败时面板还开着（剪贴板读不到、
              或者剪贴板是空的），焦点要留在编辑框里接着写，不被按钮抢走 -->
-        <v-btn
+<!--        <v-btn
           size="small"
           variant="elevated"
           color="primary"
@@ -162,7 +162,7 @@
           @click="$emit('paste-and-complete')"
         >
           粘贴并完成
-        </v-btn>
+        </v-btn>-->
       </div>
     </div>
   </div>

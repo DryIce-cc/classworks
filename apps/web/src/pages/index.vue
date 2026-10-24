@@ -11,6 +11,7 @@
       <Transition name="fade">
         <v-btn
           v-if="!isToday"
+          class="mr-2"
           prepend-icon="mdi-calendar-today"
           variant="tonal"
           @click="goToday"
@@ -18,6 +19,16 @@
           回到今天
         </v-btn>
       </Transition>
+      <!-- 截图按钮在「回到今天」右边；「已截图」小字在图标左边 -->
+      <span v-if="state.screenshotMatched" class="text-caption text-grey mr-1">已截图</span>
+      <v-btn
+        icon="mdi-camera-outline"
+        variant="text"
+        title="截图并复制到剪贴板（Ctrl+P / Ctrl+C）"
+        :disabled="!sortedItems.length"
+        :loading="state.capturing"
+        @click="captureBoard"
+      />
       <v-btn icon="mdi-chevron-left" variant="text" title="查看昨天" @click="navigateDay(-1)" />
       <v-btn
         icon="mdi-format-font-size-decrease"
@@ -53,6 +64,7 @@
   <div class="d-flex board-body">
     <v-container class="main-window flex-grow-1 no-select bloom-container" fluid>
       <homework-grid
+        ref="homeworkGrid"
         :sorted-items="sortedItems"
         :addable-subjects="addableSubjects"
         :content-style="state.contentStyle"
@@ -98,11 +110,19 @@ import {
   watchSettings,
 } from '@/utils/settings'
 import { dayDataKey, dayFromKey } from '@/utils/storageKeys'
+import { copyImageToClipboard, hashBoard } from '@/utils/screenshot'
 import * as subjectStore from '@/utils/subjectStore'
 import { cloneDefaultSubjects } from '@/utils/subjects'
 
 // 不在科目列表里的科目统一排在这个位置，即所有列表科目之后
 const LAST_ORDER = 9998
+
+// 焦点在输入框或可编辑区域里：Ctrl+C 交给它们做复制
+function isEditableTarget(target) {
+  return !!target?.closest?.(
+    'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+  )
+}
 
 export default {
   name: 'Classworks 作业板',
@@ -112,7 +132,9 @@ export default {
   },
   data() {
     return {
-      currentEditSubject: null,
+      // 空字符串而非 null：对话框常驻挂载，title 是 required String，
+      // 用 null 会在初次渲染时触发 Vue 的 prop 类型检查警告
+      currentEditSubject: '',
       state: {
         boardData: { homework: {} },
         dialogVisible: false,
@@ -134,6 +156,16 @@ export default {
         // 只读不写盘——它和 boardData / otherDays 是两回事，那两个对象正是
         // saveDayData 落盘的原样内容，预览混进去就跟着存下去了
         preview: {},
+        // 正在截图：渲染 + 写剪贴板要一会儿，期间按钮转圈、连按不重入
+        capturing: false,
+        // 最近一次截图的哈希（持久化在设置里）。用于判定当前内容是否已截过图
+        lastScreenshotHash: getSetting('screenshot.lastHash'),
+        // 本次编辑面板会话里是否真实改过内容（打开面板不算）。用于拦掉
+        // 「刚打开还没编辑」那几轮种子预览，别把「已截图」误清掉
+        _editChanged: false,
+        // 当前存档内容是否和上次截图一致。由事件驱动刷新：载入/翻日期时核对，
+        // 真实编辑后清掉，截图成功后置回。只是「打开面板」不改它
+        screenshotMatched: false,
       },
     }
   },
@@ -199,6 +231,7 @@ export default {
     isToday() {
       return this.state.dateString === this.todayString
     },
+
     // 展示板要不要把「所看的这一天」之后的日子也摆上来。往后看（含今天）要，往回看不要：
     // 过去那块板只呈现那一天自己，后来的作业存了档也不该在那儿冒出来。
     // 拿今天当分界而不是拿所看的这一天，往后翻一天并不等于就能看到后一天的作业
@@ -227,15 +260,21 @@ export default {
   watch: {
     // 面板一关，预览就没意义了：到这一步为止改动也已经写完盘了。
     // 挂在这里而不是等 save 事件，是因为面板所有的关闭方式都走同一条路，
-    // 只有一个地方需要记得清场
+    // 只有一个地方需要记得清场。重新打开时清掉「是否改过」标记
     'state.dialogVisible'(value) {
-      if (!value) this.state.preview = {}
+      if (!value) {
+        this.state.preview = {}
+      } else {
+        this.state._editChanged = false
+      }
     },
   },
 
   async mounted() {
+    window.addEventListener('keydown', this.handleScreenshotShortcut)
     try {
       await this.initializeData()
+      this.refreshScreenshotMatch()
       this.unwatchSettings = watchSettings(() => {
         this.state.fontSize = getSetting('font.size')
         this.state.contentStyle = { 'font-size': `${this.state.fontSize}px` }
@@ -247,10 +286,20 @@ export default {
   },
 
   beforeUnmount() {
+    window.removeEventListener('keydown', this.handleScreenshotShortcut)
     if (this.unwatchSettings) this.unwatchSettings()
   },
 
   methods: {
+    // 按存档内容核对是否和上次截图一致。只在非编辑状态调用（此时 sortedItems
+    // 反映存档，预览只在编辑中出现）——载入、翻日期后调一次
+    refreshScreenshotMatch() {
+      const hash = this.sortedItems.length
+        ? hashBoard(this.sortedItems, this.state.dateString)
+        : ''
+      this.state.screenshotMatched = !!this.state.lastScreenshotHash && hash === this.state.lastScreenshotHash
+    },
+
     ensureDate(dateInput) {
       if (dateInput instanceof Date) return dateInput
       if (typeof dateInput === 'string') {
@@ -477,9 +526,18 @@ export default {
     // 编辑面板开着时的实时预览：日期 -> 正文，只往 state.preview 里放。
     // 绝不碰 boardData / otherDays，也绝不调 saveDayData——
     // 这两样是真正会落盘的东西，预览混进去就不再是「只是展示」了
-    handleHomeworkPreview(entries) {
+    handleHomeworkPreview(entries, changed = false) {
       const key = this.currentEditSubject
       if (!key) return
+      // 真实改动：认定没截图过，顺手清掉存的哈希，避免残留旧标记
+      if (changed) {
+        this.state._editChanged = true
+        this.state.screenshotMatched = false
+        if (this.state.lastScreenshotHash) {
+          this.state.lastScreenshotHash = ''
+          setSetting('screenshot.lastHash', '')
+        }
+      }
       const preview = {}
       for (const [dateString, content] of Object.entries(entries || {})) {
         preview[dateString] = { [key]: content }
@@ -514,6 +572,53 @@ export default {
       this.$message.error(title, content)
     },
 
+    // 截图快捷键：Ctrl+P 随时可用（这块板用不上浏览器打印）；
+    // Ctrl+C 只在看板状态下接管——编辑面板开着时那是复制正文，不能抢。
+    // Ctrl+Shift+… / Ctrl+Alt+… 这些组合键不拦，照旧交给浏览器
+    handleScreenshotShortcut(event) {
+      if (!(event.ctrlKey || event.metaKey)) return
+      if (event.altKey || event.shiftKey) return
+      const key = event.key?.toLowerCase()
+      if (key === 'p') {
+        event.preventDefault()
+        this.captureBoard()
+        return
+      }
+      if (key !== 'c' || this.state.dialogVisible) return
+      // 焦点在输入框 / 可编辑区域里：Ctrl+C 还是留给复制
+      if (isEditableTarget(event.target)) return
+      // 真的选中了一段文字（以后开放选区的话）也别抢
+      const selection = window.getSelection()
+      if (selection && !selection.isCollapsed) return
+      event.preventDefault()
+      this.captureBoard()
+    },
+
+    // 把卡片区截成图片放进剪贴板。截图范围只到卡片区，见 HomeworkGrid.captureCards
+    async captureBoard() {
+      if (this.state.capturing) return
+      if (!this.sortedItems.length) {
+        this.$message.info('当前没有作业可截图')
+        return
+      }
+      const grid = this.$refs.homeworkGrid
+      if (!grid) return
+      this.state.capturing = true
+      try {
+        const blob = await grid.captureCards()
+        await copyImageToClipboard(blob)
+        this.state.lastScreenshotHash = hashBoard(this.sortedItems, this.state.dateString)
+        setSetting('screenshot.lastHash', this.state.lastScreenshotHash)
+        this.state.screenshotMatched = true
+        this.$message.success('截图已复制到剪贴板')
+      } catch (error) {
+        console.error('截图失败:', error)
+        this.$message.error('截图失败', error?.message || '请重试')
+      } finally {
+        this.state.capturing = false
+      }
+    },
+
     zoom(direction) {
       const step = 2
       if (direction === 'up' && this.state.fontSize < FONT_SIZE_MAX)
@@ -533,6 +638,7 @@ export default {
         this.state.dateString = dateStr
         this.state.selectedDateObj = selectedDate
         await Promise.all([this.loadDayData(), this.loadSubjects()])
+        this.refreshScreenshotMatch()
       } catch (error) {
         console.error('日期处理错误:', error)
         this.$message.error('日期处理错误', '请重新选择日期')

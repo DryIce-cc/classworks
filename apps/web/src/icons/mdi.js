@@ -4,8 +4,8 @@
  * 项目里用到的 MDI 图标，名字 -> SVG path。
  *
  * 原来引的是 @mdi/font 的图标字体：一份 woff2 加一份 CSS 共约 820KB，
- * 里面装着 7400 多个字形，而这里只用到 21 个。改成 SVG 路径后，发布产物里
- * 只剩这 21 条 path，图标也顺带能跟着 currentColor 变色、不再有字体加载闪烁。
+ * 里面装着 7400 多个字形，而这里只用到 22 个。改成 SVG 路径后，发布产物里
+ * 只剩这 22 条 path，图标也顺带能跟着 currentColor 变色、不再有字体加载闪烁。
  *
  * 新增图标两步：
  * 1. 在 @mdi/js 里查名字（把 mdi-calendar-today 这类连字符写法转成 mdiCalendarToday）
@@ -20,6 +20,7 @@ import {
   mdiBookMultiple,
   mdiCalendar,
   mdiCalendarToday,
+  mdiCamera, mdiCameraOutline,
   mdiCheckCircle,
   mdiChevronLeft,
   mdiChevronRight,
@@ -44,6 +45,7 @@ export const MDI_ICONS = {
   'mdi-book-multiple': mdiBookMultiple,
   'mdi-calendar': mdiCalendar,
   'mdi-calendar-today': mdiCalendarToday,
+  'mdi-camera-outline': mdiCameraOutline,
   'mdi-check-circle': mdiCheckCircle,
   'mdi-chevron-left': mdiChevronLeft,
   'mdi-chevron-right': mdiChevronRight,
