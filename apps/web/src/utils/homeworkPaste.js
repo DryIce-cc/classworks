@@ -110,8 +110,11 @@ function splitTitle(line, prev) {
   return { title: line, rest: '' }
 }
 
-// 剪贴板里那一段文字 → 可以直接进正文的形态。空串原样返回（粘贴那边自己当没粘）
-export function smartPaste(text) {
+// 剪贴板里那一段文字 → 可以直接进正文的形态。空串原样返回（粘贴那边自己当没粘）。
+// before 是光标所在那一行（已剥掉前导编号）的正文：追加到已有内容后面时，
+// 头一行不该被当成标题（不该补 #）——它只是接着这一行往下写，不是另起一个小节。
+// 光标在空行、行中、或还没定位时传空串，头一行照旧按标题处理
+export function smartPaste(text, before = '') {
   const rows = String(text ?? '')
     // 复制出来的东西多半是 CRLF，粘进来会在正文里留下一串看不见的 \r
     .replace(/\r\n?/g, '\n')
@@ -128,9 +131,10 @@ export function smartPaste(text) {
       out.push('')
       continue
     }
-    // 拿已经摆出去的上一行判「上面是不是空的」，而不是原文的上一行：
-    // 标题刚从一行里分出来的时候，下一行确实另起了一段
-    const title = splitTitle(row, out[out.length - 1] || '')
+    // 头一行的「上一行」是光标所在那一行；之后的行才拿已经摆出去的上一行判。
+    // 用原文的上一行不行：标题刚从一行里分出来的时候，下一行确实另起了一段
+    const prev = out.length ? out[out.length - 1] : before
+    const title = splitTitle(row, prev)
     const parts = title ? ['#' + title.title, ...splitItems(title.rest)] : splitItems(row)
     for (const part of parts) if (part) out.push(part)
   }

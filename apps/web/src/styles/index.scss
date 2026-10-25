@@ -43,8 +43,6 @@
 //
 // 只管悬停，按下的效果一条都没碰（:active 不受这个门管）
 html:not(.hw-hover-idle) .grid-item .v-card:hover {
-  transform: scale(1.01);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
 }
 
 // v-main 默认是块容器，高度纯由内容撑。改成纵向 flex：工具栏照旧占它自己那份，
@@ -91,15 +89,11 @@ html:not(.hw-hover-idle) .grid-item .v-card:hover {
 }
 
 .empty-subject-card {
-  cursor: pointer;
-  opacity: 0.8;
 }
 
 // 空科目卡片：鼠标静止一秒后悬停收掉（时长在 App.vue 的 IDLE_HOVER_MS，
 // 做法见上面 .grid-item 那段的注释）
 html:not(.hw-hover-idle) .empty-subject-card:not(:disabled):hover {
-  opacity: 1;
-  transform: scale(1.02);
 }
 
 // 设置页的科目卡：同上，套上那道门。
@@ -107,6 +101,13 @@ html:not(.hw-hover-idle) .empty-subject-card:not(:disabled):hover {
 // scope 属性，那条全局选择器就永远不匹配了
 html:not(.hw-hover-idle) .subject-card:hover {
   opacity: 1;
+}
+
+// 悬停收掉之后，卡片上的手型光标也要退回默认：鼠标还指着卡片、光标却还是手型，
+// 看着像还能点。只给用 idle 门的那几种卡片加，别处的光标不动
+html.hw-hover-idle .grid-item .v-card,
+html.hw-hover-idle .empty-subject-card {
+  cursor: default;
 }
 
 // Vuetify 自己那套悬停：卡片、按钮、chip、输入框悬停时蒙版会变亮一点，

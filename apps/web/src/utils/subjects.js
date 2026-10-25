@@ -3,8 +3,6 @@
 // 科目带上附加属性后两份很容易走偏，统一放这里。
 
 // 附加属性：
-// - multiHomework：启用多份作业。展示板底部常驻一张「继续添加作业」卡片，
-//   从它进来时正文末尾留两个空行，好和已有内容隔开另起一份。
 // - extraSubjects：附加科目名称。可以把作业记到本卡片下的附加科目里，
 //   写法就是正文里的一行「# 附加科目名的作业」。
 export const DEFAULT_SUBJECTS = [
@@ -17,7 +15,7 @@ export const DEFAULT_SUBJECTS = [
   { name: '政治', order: 6, extraSubjects: ['历史合格作业'] },
   { name: '历史', order: 7, extraSubjects: ['政治合格作业'] },
   { name: '地理', order: 8 },
-  { name: '其他', order: 9, extraSubjects: ['通知'], multiHomework: true },
+  { name: '其他', order: 9, extraSubjects: ['通知'] },
 ]
 
 // 规整单个科目：补齐附加属性，附加科目名去空白、去空串、去重。
@@ -27,7 +25,6 @@ export function normalizeSubject(subject, index = 0) {
   return {
     name: subject?.name ?? '',
     order: subject?.order ?? index,
-    multiHomework: !!subject?.multiHomework,
     extraSubjects: [...new Set(extra.map((n) => String(n).trim()).filter(Boolean))],
   }
 }
@@ -56,7 +53,6 @@ export const nextSubjectUid = () => `subject-${++uidSeq}`
 export function toViewSubjects(list) {
   return list.map((subject) => ({
     name: String(subject?.name ?? '').trim() || '未命名',
-    multiHomework: !!subject?.multiHomework,
     extraSubjects: [...(subject?.extraSubjects || [])],
     uid: nextSubjectUid(),
   }))
@@ -68,7 +64,6 @@ export function toStoredSubjects(list) {
   return list.map((subject, index) => ({
     name: subject.name,
     order: index,
-    multiHomework: !!subject.multiHomework,
     extraSubjects: [...(subject?.extraSubjects || [])],
   }))
 }

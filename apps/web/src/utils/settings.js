@@ -8,7 +8,7 @@ const SETTINGS_CHANGED_EVENT = 'classworks:settings:changed'
 // 必须同一套数：以前按钮允许加到 100、校验却只放到 32，超过 32 的值被静默丢弃，
 // 界面上变大了、一刷新又弹回去
 export const FONT_SIZE_MIN = 16
-export const FONT_SIZE_MAX = 100
+export const FONT_SIZE_MAX = 24
 
 // 所有配置项的定义（精简版）
 const settingsDefinitions = {

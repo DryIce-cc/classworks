@@ -8,7 +8,7 @@
 
     <template #append>
       <!-- 只在离开今天时摆出来。淡入淡出走通用那套（styles/transitions.scss 的 .fade-*） -->
-      <Transition name="fade">
+<!--      <Transition name="fade">-->
         <v-btn
           v-if="!isToday"
           class="mr-2"
@@ -18,18 +18,18 @@
         >
           回到今天
         </v-btn>
-      </Transition>
-      <!-- 截图按钮在「回到今天」右边；「已截图」小字在图标左边 -->
-      <span v-if="state.screenshotMatched" class="text-caption text-grey mr-1">已截图</span>
+<!--      </Transition>-->
+      <span v-if="state.screenshotMatched" class="text-caption text-grey ml-1">已截图</span>
       <v-btn
         icon="mdi-camera-outline"
         variant="text"
-        title="截图并复制到剪贴板（Ctrl+P / Ctrl+C）"
+        title="截图并复制（Ctrl+C）"
         :disabled="!sortedItems.length"
         :loading="state.capturing"
         @click="captureBoard"
       />
       <v-btn icon="mdi-chevron-left" variant="text" title="查看昨天" @click="navigateDay(-1)" />
+
       <v-btn
         icon="mdi-format-font-size-decrease"
         variant="text"
@@ -46,7 +46,7 @@
         <template #activator="{ props }">
           <v-btn v-bind="props" icon="mdi-calendar" variant="text" title="选择日期" />
         </template>
-        <v-card border rounded="md">
+        <v-card border>
           <v-date-picker
             :model-value="state.selectedDateObj"
             color="primary"
@@ -78,7 +78,6 @@
     v-model="state.dialogVisible"
     :title="currentEditSubject"
     :initial-date="state.editDate"
-    :append-blank-lines="state.editAppendBlankLines"
     :extra-subjects="currentEditExtraSubjects"
     @save="handleHomeworkSave"
     @preview="handleHomeworkPreview"
@@ -110,6 +109,7 @@ import {
   watchSettings,
 } from '@/utils/settings'
 import { dayDataKey, dayFromKey } from '@/utils/storageKeys'
+import { forceHoverIdle, resumeHoverIdle } from '@/utils/hoverIdle'
 import { copyImageToClipboard, hashBoard } from '@/utils/screenshot'
 import * as subjectStore from '@/utils/subjectStore'
 import { cloneDefaultSubjects } from '@/utils/subjects'
@@ -139,9 +139,6 @@ export default {
         boardData: { homework: {} },
         dialogVisible: false,
         dateString: '',
-        // 本次打开编辑面板要在正文末尾留几个空行：普通入口 1，
-        // 从「继续添加作业」卡片进来 2，好和已有内容隔开另起一份
-        editAppendBlankLines: 1,
         // 本次打开编辑面板停在哪一天。卡片上点的是哪一天就进哪一天，
         // 没给（点科目名那个标题区）就跟着展示板正在看的那天
         editDate: '',
@@ -212,11 +209,11 @@ export default {
       return items
     },
 
-    // 底部卡片：还没内容的科目，外加启用了多份作业的科目（已有内容也常驻一张「继续添加作业」）
+    // 底部卡片：还没内容的科目
     addableSubjects() {
       const used = this.storedSubjectNames()
       return this.state.availableSubjects
-        .filter((subject) => subject.multiHomework || !used.has(subject.name))
+        .filter((subject) => !used.has(subject.name))
         .sort((a, b) => a.order - b.order)
     },
 
@@ -230,6 +227,14 @@ export default {
     },
     isToday() {
       return this.state.dateString === this.todayString
+    },
+    // 缩小字体：没有作业卡片、或已经到最小，按钮就灰掉
+    canZoomOut() {
+      return !!this.sortedItems.length && this.state.fontSize > FONT_SIZE_MIN
+    },
+    // 放大字体：没有作业卡片、或已经到最大，按钮就灰掉
+    canZoomIn() {
+      return !!this.sortedItems.length && this.state.fontSize < FONT_SIZE_MAX
     },
 
     // 展示板要不要把「所看的这一天」之后的日子也摆上来。往后看（含今天）要，往回看不要：
@@ -514,11 +519,9 @@ export default {
     },
 
     // 编辑入口，key 就是科目名；对话框初始停在哪一天由 options.date 给：
-    // 卡片上点的是哪一天就进哪一天，没给就跟着展示板正在看的那天（点标题区走这条）。
-    // appendBlankLines 由卡片决定：底部「继续添加作业」进来要 2 个空行，其余 1 个
+    // 卡片上点的是哪一天就进哪一天，没给就跟着展示板正在看的那天（点标题区走这条）
     openDialog(key, options = {}) {
       this.currentEditSubject = key
-      this.state.editAppendBlankLines = options.appendBlankLines || 1
       this.state.editDate = options.date || this.state.dateString
       this.state.dialogVisible = true
     },
@@ -572,12 +575,13 @@ export default {
       this.$message.error(title, content)
     },
 
-    // 截图快捷键：Ctrl+P 随时可用（这块板用不上浏览器打印）；
-    // Ctrl+C 只在看板状态下接管——编辑面板开着时那是复制正文，不能抢。
-    // Ctrl+Shift+… / Ctrl+Alt+… 这些组合键不拦，照旧交给浏览器
+    // 截图快捷键：Ctrl/Alt+P 随时可用（这块板用不上浏览器打印）；
+    // Ctrl/Alt+C 只在看板状态下接管——编辑面板开着时那是复制正文，不能抢。
+    // Ctrl/Alt+Shift+… 这些组合键不拦，照旧交给浏览器
     handleScreenshotShortcut(event) {
-      if (!(event.ctrlKey || event.metaKey)) return
-      if (event.altKey || event.shiftKey) return
+      // Alt 也算这组快捷键（和 Ctrl/Cmd 等价）
+      if (!(event.ctrlKey || event.metaKey || event.altKey)) return
+      if (event.shiftKey) return
       const key = event.key?.toLowerCase()
       if (key === 'p') {
         event.preventDefault()
@@ -597,25 +601,25 @@ export default {
     // 把卡片区截成图片放进剪贴板。截图范围只到卡片区，见 HomeworkGrid.captureCards
     async captureBoard() {
       if (this.state.capturing) return
-      if (!this.sortedItems.length) {
-        this.$message.info('当前没有作业可截图')
-        return
-      }
+      if (!this.sortedItems.length) return
       const grid = this.$refs.homeworkGrid
       if (!grid) return
       this.state.capturing = true
       try {
+        // 截图前立刻收掉悬停，免得把鼠标正指着的那张卡带进图里
+        forceHoverIdle()
         const blob = await grid.captureCards()
         await copyImageToClipboard(blob)
         this.state.lastScreenshotHash = hashBoard(this.sortedItems, this.state.dateString)
         setSetting('screenshot.lastHash', this.state.lastScreenshotHash)
         this.state.screenshotMatched = true
-        this.$message.success('截图已复制到剪贴板')
       } catch (error) {
         console.error('截图失败:', error)
         this.$message.error('截图失败', error?.message || '请重试')
       } finally {
         this.state.capturing = false
+        // 拍完了，悬停恢复正常（重新计时，不动鼠标也不会一直挂着）
+        resumeHoverIdle()
       }
     },
 

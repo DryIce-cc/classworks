@@ -43,58 +43,6 @@ $standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
   opacity: 0;
 }
 
-// 卡片按压效果与触摸体验
-.v-card {
-  // 原来写的是 transition: all 400ms。all 会把离场淡出也一起接管：
-  // 卡片离场时按 all 走满 400ms，格子一直被占着，同排卡片等它走完才瞬移补上。
-  // 所以这里只列真正会动的属性，离场淡出走下面 .v-list-* 那套
-  transition:
-    transform 400ms $emphasized-decelerate,
-    box-shadow 400ms $emphasized-decelerate,
-    opacity 200ms $standard-easing,
-    width 200ms $standard-easing;
-  touch-action: manipulation;
-
-  &:active {
-    transform: scale(0.99);
-    transition-duration: 80ms;
-  }
-
-  @media (pointer: coarse) {
-    &::before {
-      // 扩大触摸反馈区域
-      margin: -8px;
-    }
-  }
-}
-
-// 空科目卡片动画
-.empty-subject-card {
-  transition:
-    opacity 200ms $standard-easing,
-    transform 200ms $standard-easing,
-    box-shadow 200ms $standard-easing;
-}
-
-// 悬停样式套上 html:not(.hw-hover-idle)：鼠标静止之后这条不生效，元素落回
-// 上面那个 .empty-subject-card，抬升和阴影全收。做法为什么是这样，
-// 见 styles/index.scss 里 .grid-item 那段的注释
-html:not(.hw-hover-idle) .empty-subject-card:hover {
-  // 抬升只留一点点，别跟上面作业卡片一个量级
-  transform: translateY(-2px) scale(1.01);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-}
-
-// 待添加科目列表动画（TransitionGroup name="v-list"）：淡入即可，不掺位移。
-// 下面每条都得带上 .v-card 提一档权重：底部卡片本身就是 v-card，而 Vuetify 的
-// .v-card 规则是随工具栏那个 chunk 后加载的、权重又一样，会把同权重的规则盖掉——
-// position 被按回 relative（离场卡片继续占着格子），transition 也被换成不含
-// transform 的那套（让位时就没有滑动，只是瞬移）
-.v-list-enter-active.v-card,
-.v-list-leave-active.v-card {
-  transition: opacity 200ms $standard-easing;
-}
-
 .v-list-enter-from.v-card,
 .v-list-leave-to.v-card {
   opacity: 0;
@@ -113,60 +61,42 @@ html:not(.hw-hover-idle) .empty-subject-card:hover {
 }
 
 // 对话框：去掉点击波纹，并关掉卡片的按压效果
-.v-dialog {
-  &::before,
-  &::after {
-    display: none !important;
-  }
+//.v-dialog {
+//  &::before,
+//  &::after {
+//    display: none !important;
+//  }
+//
+//  .v-card {
+//    transition: none;
+//
+//    &:active {
+//      transform: none;
+//    }
+//  }
+//}
+//
+//.v-dialog-transition-enter-active {
+//  transition:
+//    transform 400ms $emphasized-decelerate,
+//    opacity 300ms $standard-easing;
+//}
+//
+//.v-dialog-transition-leave-active {
+//  transition:
+//    transform 250ms $emphasized-accelerate,
+//    opacity 200ms $standard-accelerate;
+//}
 
-  .v-card {
-    transition: none;
-
-    &:active {
-      transform: none;
-    }
-  }
-}
-
-.v-dialog-transition-enter-active {
-  transition:
-    transform 400ms $emphasized-decelerate,
-    opacity 300ms $standard-easing;
-}
-
-.v-dialog-transition-leave-active {
-  transition:
-    transform 250ms $emphasized-accelerate,
-    opacity 200ms $standard-accelerate;
-}
+//TODO:全局设定touch-action: manipulation;提升响应速度
 
 // 按钮状态变化动画
 .v-btn {
-  transition:
-    background-color 250ms $standard-easing,
-    transform 150ms $emphasized-decelerate;
-  touch-action: manipulation;
   min-height: 40px; // 确保触摸目标足够大
   min-width: 40px;
-
-  &:active {
-    transform: scale(0.98);
-    transition-duration: 80ms;
-  }
-
-  @media (pointer: coarse) {
-    // 触摸设备上的特殊处理
-    padding: 8px 16px;
-    margin: 4px;
-
-    &::before {
-      // 扩大触摸反馈区域
-      margin: -8px;
-    }
-  }
 }
 
-// 禁用文字选择
+// TODO: 全局禁用文字选择
 .no-select {
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -175,40 +105,40 @@ html:not(.hw-hover-idle) .empty-subject-card:hover {
   -webkit-touch-callout: none;
 }
 
-// 通用淡入淡出：凡是「硬切」的显示/隐藏都用它，模板里写 <Transition name="fade">。
-// 入场 180ms 减速、出场 120ms 加速：进场柔和、离场利落，短到几乎察觉不到过程，
-// 只把「啪」的一下抹平；再慢就变成拖泥带水，显摆。
-// 这几条必须放在文件最后：上面 .v-btn、.v-card、.empty-subject-card 各自都带一条
-// transition，权重跟这里一样，靠写在后面才盖得住它们（作业编辑里那两个留空的
-// 键位就是 .v-btn.vis-fade，被 .v-btn 那条盖掉就等于没淡）
-.fade-enter-active {
-  transition: opacity 180ms $standard-easing;
-}
-
-.fade-leave-active {
-  transition: opacity 120ms $standard-accelerate;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-
-// 用 visibility 切换显示/隐藏的那几处（元素不能真拿掉：位置或者高度得留着，
-// 拿掉的话旁边的东西当场跳一下）。平时挂 .vis-fade，要藏的时候加 .vis-fade-off。
-// visibility 自己不插值，但 CSS 里它在两端之间一律当 visible，所以淡出这一整段
-// 都还看得见，走完才真的藏起来——看着是淡出，位置和高度一点不动。
-// 时长跟上面那套一致：进场 180ms、离场 120ms（过渡取的是变化之后那一档，
-// 所以短的 120ms 写在 .vis-fade-off 上）
-.vis-fade {
-  transition:
-    opacity 180ms $standard-easing,
-    visibility 180ms $standard-easing;
-}
-
-.vis-fade-off {
-  opacity: 0;
-  visibility: hidden;
-  transition-duration: 120ms;
-  transition-timing-function: $standard-accelerate;
-}
+//// 通用淡入淡出：凡是「硬切」的显示/隐藏都用它，模板里写 <Transition name="fade">。
+//// 入场 180ms 减速、出场 120ms 加速：进场柔和、离场利落，短到几乎察觉不到过程，
+//// 只把「啪」的一下抹平；再慢就变成拖泥带水，显摆。
+//// 这几条必须放在文件最后：上面 .v-btn、.v-card、.empty-subject-card 各自都带一条
+//// transition，权重跟这里一样，靠写在后面才盖得住它们（作业编辑里那两个留空的
+//// 键位就是 .v-btn.vis-fade，被 .v-btn 那条盖掉就等于没淡）
+//.fade-enter-active {
+//  transition: opacity 180ms $standard-easing;
+//}
+//
+//.fade-leave-active {
+//  transition: opacity 120ms $standard-accelerate;
+//}
+//
+//.fade-enter-from,
+//.fade-leave-to {
+//  opacity: 0;
+//}
+//
+//// 用 visibility 切换显示/隐藏的那几处（元素不能真拿掉：位置或者高度得留着，
+//// 拿掉的话旁边的东西当场跳一下）。平时挂 .vis-fade，要藏的时候加 .vis-fade-off。
+//// visibility 自己不插值，但 CSS 里它在两端之间一律当 visible，所以淡出这一整段
+//// 都还看得见，走完才真的藏起来——看着是淡出，位置和高度一点不动。
+//// 时长跟上面那套一致：进场 180ms、离场 120ms（过渡取的是变化之后那一档，
+//// 所以短的 120ms 写在 .vis-fade-off 上）
+//.vis-fade {
+//  transition:
+//    opacity 180ms $standard-easing,
+//    visibility 180ms $standard-easing;
+//}
+//
+//.vis-fade-off {
+//  opacity: 0;
+//  visibility: hidden;
+//  transition-duration: 120ms;
+//  transition-timing-function: $standard-accelerate;
+//}

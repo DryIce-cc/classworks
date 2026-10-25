@@ -50,9 +50,8 @@
                 <v-btn
                   v-if="canGoToday"
                   size="small"
-                  class="today-btn"
-                  variant="text"
-                  rounded="pill"
+                  variant="tonal"
+                  prepend-icon="mdi-calendar-today"
                   @mousedown.prevent
                   @click="goToday"
                 >
@@ -78,7 +77,7 @@
                     title="选择日期"
                   />
                 </template>
-                <v-card border rounded="md">
+                <v-card border>
                   <v-date-picker
                     :model-value="currentDateObj"
                     color="primary"
@@ -164,6 +163,12 @@
       </v-card-text>
     </v-card>
 
+    <!-- 对话框外的一句提示：点哪儿都算完成编辑（点遮罩、点这句都一样）。
+         压在对话框正下方、水平居中，灰字加下阴影，隔着遮罩也读得出。
+         绝对定位挂在对话框内容容器上（那个容器 position: absolute），
+         top:100% 正好落在卡片下面；pointer-events:none 让它不挡点击 -->
+    <div class="dialog-slogan">点击空白处完成编辑</div>
+    <div class="dialog-slogan" style="top: 107%; color: #bbb;">Ctrl+S / Esc</div>
   </v-dialog>
 
   <!-- 缩放条。整个面板缩着看（见 dialogZoomStyle），所以条不放在卡片里：
@@ -258,7 +263,7 @@ const IDLE_CLOSE_RESET_DELAY = 20000
 const COUNTDOWN_BAR_DELAY = 10000
 // 倒计定时器醒来的间隔。够密，条出现那一刻的误差看不出来；够疏，白跑的轮询少
 const COUNTDOWN_TICK = 200
-// （appendBlankLines），但那是「另起一份」的排版需求，只对正在编辑的那天成立
+// 正文末尾至少留几个空行，方便接着写下一条
 const DEFAULT_BLANK_LINES = 1
 // 删除键按住连删：延迟和重复速度都照 Windows 键盘的默认值
 // （控制面板「键盘 → 速度」那一页：重复延迟 500ms、重复速率 31 字/秒，
@@ -314,12 +319,6 @@ export default {
     initialDate: {
       type: String,
       default: '',
-    },
-    // 正文末尾至少留几个空行，方便接着写下一条。
-    // 普通入口 1；从「继续添加作业」卡片进来 2，好和已有内容隔开另起一份
-    appendBlankLines: {
-      type: Number,
-      default: 1,
     },
     // 本科目的附加科目名称，给成一键插入「# 名字的作业」小节用
     extraSubjects: {
@@ -403,6 +402,8 @@ export default {
     // Esc / Ctrl+S 挂 document 捕获阶段，不挂卡片：点了卡片里不可聚焦的地方
     // （正文、推荐面板的空白）焦点会掉回 body，这时卡片上的 @keydown 收不到按键
     document.addEventListener('keydown', this.handleKeydown, true)
+    // 面板开着且有没存盘的改动时，关页面/刷新之前先拦一下
+    window.addEventListener('beforeunload', this.handleBeforeUnload)
     // 设置在别的标签页/页面改了（storage 事件），这边跟着走
     this.unwatchSettings = watchSettings((settings, event) => {
       if (event && event.key !== 'editor.zoom') return
@@ -420,6 +421,7 @@ export default {
     document.removeEventListener('pointermove', this.resetCloseCountdown, true)
     document.removeEventListener('visibilitychange', this.handleVisibilityChange)
     document.removeEventListener('keydown', this.handleKeydown, true)
+    window.removeEventListener('beforeunload', this.handleBeforeUnload)
     if (this.unwatchSettings) this.unwatchSettings()
     this.stopHoldRepeat()
   },
@@ -704,9 +706,8 @@ export default {
       this.drafts[dateString] = this.padTrailingBlankLines(trimmed)
     },
     // 正文末尾补足空行，已经够了就只补差额。空正文不动（没什么可隔开的）。
-    // want 不传就是跟着面板的进入方式走；预定标记搬过去的目标日要另开一份，
-    // 不该跟着那个入口走——传 DEFAULT_BLANK_LINES
-    padTrailingBlankLines(content, want = this.appendBlankLines) {
+    // 预定标记搬过去的目标日要另开一份，不该跟着入口走——传 DEFAULT_BLANK_LINES
+    padTrailingBlankLines(content, want = DEFAULT_BLANK_LINES) {
       if (!content) return content
       const count = Math.max(0, want)
       const have = /(\n*)$/.exec(content)[1].length
@@ -864,23 +865,32 @@ export default {
       return false
     },
 
-    // Esc 与 Ctrl/Cmd+S 都当作「完成编辑」，和点空白一样走保存流程。
+    // Esc / Tab 与 Ctrl/Cmd/Alt+S 都当作「完成编辑」，和点空白一样走保存流程。
     // 挂在 document 捕获阶段：焦点不在卡片里也照样收得到（见 mounted 里的说明）
     handleKeydown(event) {
       if (!this.dialogVisible) return
-      const isSave = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's'
-      if (event.key !== 'Escape' && !isSave) return
-      // 日期选择器开着时，Esc 只收选择器，面板留着继续编辑；
+      // Alt 也算这组快捷键（和 Ctrl/Cmd 等价）
+      const isSave = (event.ctrlKey || event.metaKey || event.altKey) && event.key.toLowerCase() === 's'
+      if (event.key !== 'Escape' && event.key !== 'Tab' && !isSave) return
+      // 日期选择器开着时，Esc/Tab 只收选择器，面板留着继续编辑；
       // 选择器里的方向键、回车等不在这里处理，原样放给 Vuetify
-      if (this.pickerOpen && event.key === 'Escape') {
+      if (this.pickerOpen && (event.key === 'Escape' || event.key === 'Tab')) {
         this.pickerOpen = false
         event.stopPropagation()
         return
       }
-      // Ctrl+S 默认会弹出浏览器的「保存网页」对话框，Esc 也别漏给 Vuetify 自己那套
+      // Ctrl/Alt+S 默认会弹出浏览器的「保存网页」对话框，Esc/Tab 也别漏给 Vuetify 自己那套
       event.preventDefault()
       event.stopPropagation()
       this.handleClose()
+    },
+    // 面板开着、且真有没存盘的改动（只是打开不算）：关页面/刷新前先确认一下，
+    // 免得草稿跟着页面一起没了。完成编辑时改动已经落盘，这条不会触发
+    handleBeforeUnload(event) {
+      if (!this.dialogVisible) return
+      if (!this.changedDrafts().length) return
+      event.preventDefault()
+      event.returnValue = ''
     },
     getEditor() {
       return this.$refs.editorRef || null
@@ -924,9 +934,7 @@ export default {
       }
       const entries = []
       for (const [dateString, list] of byDate) {
-        // 空行统一理一遍，末尾按默认的一份留：appendBlankLines 管的是「这个面板怎么打开的」，
-        // 从「继续添加作业」进来要 2 个是为了在正文末尾另起一份，
-        // 跟往目标日追加一段没关系，跟着走就会凭空多出一个空行。
+        // 空行统一理一遍，末尾按默认的一份留
         // 编号按目的地那一节重排一遍：搬过去的是别处的行，编号得跟着新位置来，
         // 不然目标日里会并着两个 1.
         // 这段拼装和 buildPreviewPayload 那处逐字相同，但两边的 base 不同：
@@ -1688,6 +1696,52 @@ export default {
 .hw-title {
   margin-left: 7px;
   margin-top: 14px;
+}
+
+/* 对话框正下方那句提示。挂在对话框内容容器上（那个容器 position: absolute），
+   top:100% 落在卡片下面；pointer-events:none 让它不挡点击，点它照样关面板 */
+.dialog-slogan {
+  position: absolute;
+  top: 102%;
+  left: 50%;
+  transform: translate(-50%, 10px);
+
+  font-size: 0.8rem;
+  line-height: 2.2;
+  white-space: nowrap;
+  pointer-events: none;
+
+  isolation: isolate;
+  padding: 0 1.25em;
+}
+
+.dialog-slogan::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+
+  /* 左右各扩 2.5em，给横向渐隐留空间；文字在 padding 1.25em 内，完全落在实心区 */
+  left: -2.5em;
+  right: -2.5em;
+  top: 50%;
+  transform: translateY(-52%);
+
+  height: 2em;
+  border-radius: 999px;
+
+  /* 横向渐变做两端渐隐，中间 #222 不透明；纵向不加 mask，交给 blur 自然衰减 */
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    #161616 2.2em,
+    #161616 calc(100% - 2.2em),
+    transparent 100%
+  );
+
+  /* 关键：blur 同时柔化上下左右，垂直只溢出约 5px，不会碰到上一行文字；
+     也没有任何“渐变截断线”，胶囊轮廓被完全糊掉 */
+  filter: blur(5px);
+  will-change: filter;
 }
 
 /* 对话框比屏幕高的时候，卡片自己要滚（Vuetify 给卡片加的 overflow-y: auto）。

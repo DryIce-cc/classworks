@@ -49,7 +49,6 @@
         :key="subject.uid"
         :data-uid="subject.uid"
         border
-        rounded="md"
         class="subject-card"
         :class="{ 'subject-card-hidden': subject.uid === draggingUid }"
         @pointerdown="startDrag($event, subject)"
@@ -78,14 +77,6 @@
         </div>
 
         <div class="subject-card-body">
-          <v-switch
-            v-model="subject.multiHomework"
-            color="primary"
-            density="compact"
-            hide-details
-            label="启用“继续添加作业”"
-          />
-
           <v-text-field
             v-model="extraDrafts[subject.uid]"
             append-inner-icon="mdi-plus"
@@ -141,8 +132,7 @@
 
     <v-dialog v-model="resetDialog" max-width="420">
       <v-card rounded="lg">
-        <v-card-title class="text-subtitle-1">重置为默认科目列表</v-card-title>
-        <v-card-text>当前的科目、附加科目名和多份作业设置都会被默认清单覆盖。</v-card-text>
+        <v-card-title class="text-subtitle-1">将所有科目重置为默认？</v-card-title>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="resetDialog = false">取消</v-btn>
@@ -273,7 +263,7 @@ export default {
     addSubject() {
       const name = this.newSubjectName.trim()
       if (!name) return
-      const subject = { name, multiHomework: false, extraSubjects: [], uid: nextSubjectUid() }
+      const subject = { name, extraSubjects: [], uid: nextSubjectUid() }
       this.subjects = [...this.subjects, subject]
       this.addDialog = false
       this.newSubjectName = ''

@@ -727,13 +727,33 @@ const pastedFromClipboard = Annotation.define()
 // 和手敲进去的字走的是同一个口径
 function pasteText(text) {
   if (!view || text == null || text === '') return false
-  const next = smartPaste(text)
+  const sel = view.state.selection.main
+  // 光标停在行尾、这一行已有正文：这一笔是「追加到某一行后面」。
+  // 头一行是标题样式的，直接接在正文后面、不加 #（它只是接着这一行往下写，
+  // 不是另起一个小节，见 smartPaste 的 before）；头一行是编号的，那是另一条作业，
+  // 得另起一行，不然会跟这一行挤成一行
+  const line = view.state.doc.lineAt(sel.head)
+  const appending = sel.empty && sel.head === line.to
+  const before = appending ? bodyOf(line.text).trim() : ''
+  // 这一行光杆挂着个编号（「3. 」）：追加上去的东西会接在号后面
+  const numbered = appending && numberLen(line.text) > 0
+  const next = smartPaste(text, before)
+  let insert = next
+  if (appending) {
+    const startsItem = /^\d+\.(?=[ 　]|$)/.test(next)
+    // 追加到已有正文、或光杆编号后面：头一行只是接着这一行往下写，
+    // 剪贴板自带的 # 一并摘掉——留着的话它会落在这一行中间，行首不是 #，
+    // 装饰也就藏不住它了（这正是「首行的 # 出现在正文里」的原因）
+    if (before || numbered) insert = next.replace(/^#[ \t　]?/, '')
+    // 头一行是编号（或这一行本来就只是个光杆编号）：另起一行，别跟这一行挤成一行
+    if (startsItem || (!before && numbered)) insert = '\n' + insert
+  }
   view.dispatch({
     // replaceSelection 给的是一整份事务说明（changes + selection），得摊开铺进来。
     // 整个塞进 changes 里的话，那层对象没有 from/to/insert，CM 会当成空改动，
     // 粘贴看起来「没反应」，连报错都没有
-    ...view.state.replaceSelection(next),
-    annotations: next.includes('\n') ? pastedFromClipboard.of(true) : undefined,
+    ...view.state.replaceSelection(insert),
+    annotations: insert.includes('\n') ? pastedFromClipboard.of(true) : undefined,
   })
   return true
 }

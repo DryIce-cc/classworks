@@ -313,11 +313,11 @@ export default {
   font-size: 0.75rem;
 }
 
-/* 量词那一排。五个键对不上三列，所以自己一行、均分整行，
+/* 量词那一排。六个键对不上三列，所以自己一行、均分整行，
    硬凑进上面那个网格只会让键宽一会儿宽一会儿窄 */
 .measure-row {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: var(--key-gap);
 }
 
@@ -328,8 +328,10 @@ export default {
 .measure-btn {
   width: 100%;
   min-width: 0;
-  min-height: 34px;
+  min-height: 3px;
   padding: 0 2px;
   font-size: 0.8rem;
+  /* 六个键挤在一行，字一折行这一排就白高了 */
+  white-space: nowrap;
 }
 </style>

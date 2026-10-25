@@ -16,7 +16,7 @@
         <div v-for="item in col" :key="item.key" class="grid-item" :data-key="item.key">
           <v-card
             border
-            class="hw-card cursor-pointer"
+            class="hw-card"
             height="100%"
             rounded="md"
             @click="$emit('open-dialog', item.key)"
@@ -46,7 +46,7 @@
                     <span class="label-date">{{ day.date }}</span>
                     <span class="label-de">{{ day.date ? '的' : '' }}</span>
                     <span class="label-name">
-                      <span v-if="block.day" class="label-date">{{ block.day }}</span>{{ block.title }}
+                      <span v-if="block.day" class="label-date">{{ block.day }}</span><span :class="{ 'label-date': !block.custom }">{{ block.title }}</span>
                     </span>
                   </div>
                   <div class="hw-paragraph">
@@ -68,8 +68,7 @@
       </TransitionGroup>
     </div>
 
-    <!-- 可添加作业的科目：尚无内容的直接开始填；启用了多份作业的科目即使已有内容，
-         也留一张「继续添加作业」卡片。下边距留在上面那块（.grid-masonry），
+    <!-- 可添加作业的科目：尚无内容的直接开始填。下边距留在上面那块（.grid-masonry），
          这边的上外边距空出来给 margin-top:auto，见 styles/index.scss -->
     <div ref="emptySubjects" class="empty-subjects">
       <div class="empty-subjects-grid">
@@ -93,9 +92,7 @@
             </v-card-title>
             <v-card-text class="text-center">
               <v-icon color="grey" size="small"> mdi-plus </v-icon>
-              <div class="text-caption text-grey">
-                {{ hasContent(subject.name) ? '继续添加作业' : '点击添加作业' }}
-              </div>
+              <div class="text-caption text-grey">点击添加作业</div>
             </v-card-text>
           </v-card>
         </TransitionGroup>
@@ -129,7 +126,7 @@ export default {
   name: 'HomeworkGrid',
   props: {
     sortedItems: { type: Array, required: true },
-    // 尚无内容的科目，外加启用了多份作业的科目（带附加属性：multiHomework / extraSubjects）
+    // 尚无内容的科目
     addableSubjects: { type: Array, required: true },
     contentStyle: { type: Object, default: () => ({}) },
     // 作业编辑面板开着时页面不能动，自动上滑也一并停掉
@@ -239,12 +236,9 @@ export default {
       this._scrollTimer = 0
     },
 
-    // 底部这张卡片：启用了多份作业的科目从这儿进来，正文末尾多留一个空行，
-    // 好在已有内容下面另起一份，而不是紧跟着最后一行写
+    // 底部这张卡片：还没有内容的科目从这儿进来
     openAddDialog(subject) {
-      this.$emit('open-dialog', subject.name, {
-        appendBlankLines: subject.multiHomework ? 2 : 1,
-      })
+      this.$emit('open-dialog', subject.name)
     },
 
     // 离场卡片钉在原位（实现见 utils/domHold，与设置页共用同一份）
@@ -261,11 +255,6 @@ export default {
     // 截图方法由页面去调，这里只把 DOM 节点交出去
     captureCards() {
       return captureElement(this.$refs.gridContainer)
-    },
-
-    // 该科目在展示板上已经有内容卡片了没有：用来区分「点击添加作业」和「继续添加作业」
-    hasContent(name) {
-      return this.sortedItems.some((item) => item.key === name)
     },
 
     // 「点击添加作业」卡片还露在视野里、且页面没滑到顶，就该把它上滑出去
@@ -343,24 +332,25 @@ export default {
         const blocks = (parsed[index] || []).map((para) => {
           // 没小标题的那一段就叫「作业」，没有颜色、没有自己的日期
           const head = para.heading || { day: '', gap: '', title: '作业' }
-          // 收集所有带序号的行
-          const numberedLines = para.lines.filter(line => line.number)
-          // 如果整个作业卡片只有一个带序号的行，则不显示该序号
-          const hideNumber = numberedLines.length === 1
           return {
             custom: para.heading !== null,
             day: head.day,
             title: head.gap + head.title,
             lines: para.lines,
-            hideNumber,
           }
         })
         // 空的段（比如正文只剩空行）不占一块
-        if (!blocks.length) continue
+        const visible = blocks.filter((block) => block.lines.length)
+        if (!visible.length) continue
+        // 这一天只有一行、而且那一行有序号：把序号藏起来。
+        // 一天一个数，不是整张卡一个数——卡片跨了几天，各天各算各的
+        const allLines = visible.flatMap((block) => block.lines)
+        const hideNumber = allLines.length === 1 && !!allLines[0].number
+        for (const block of visible) block.hideNumber = hideNumber
         days.push({
           date: segment.label || '',
           dateString: segment.dateString,
-          blocks,
+          blocks: visible,
         })
       }
       return days
@@ -449,12 +439,14 @@ export default {
 /* 科目名、小标题、正文三处之间的间距统一取这一个值 */
 .hw-card {
   --hw-gap: 6px;
+  /* 自己给手型光标，不用 Vuetify 的 .cursor-pointer：那个工具类带 !important，
+     悬停收掉之后（styles/index.scss 的 idle 规则）压不下去 */
+  cursor: pointer;
 }
 
 /* 标题字号由 contentStyle 绑定，与正文一致 */
 .hw-card-title {
-  padding: 12px 12px 0;
-  line-height: 1.4;
+  padding: 8px 0 6px 12px;
 }
 
 /* 上内边距即科目名到首个小标题（或正文）的间距 */
@@ -528,7 +520,7 @@ export default {
 /* 悬挂只给有序号的行：序号占一格、正文从这个格子后面开始，
    这一行的折行也对齐到序号后面。没序号的行不占格，普通顶格写 */
 .hw-line-num {
-  --hw-num-gap: 0.5em;
+  --hw-num-gap: 0.3em;
   padding-left: calc(var(--hw-line-num-col, 0) + var(--hw-num-gap));
   text-indent: calc(-1 * (var(--hw-line-num-col, 0) + var(--hw-num-gap)));
 }

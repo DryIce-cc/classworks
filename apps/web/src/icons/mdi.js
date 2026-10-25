@@ -20,7 +20,7 @@ import {
   mdiBookMultiple,
   mdiCalendar,
   mdiCalendarToday,
-  mdiCamera, mdiCameraOutline,
+  mdiCameraOutline,
   mdiCheckCircle,
   mdiChevronLeft,
   mdiChevronRight,
