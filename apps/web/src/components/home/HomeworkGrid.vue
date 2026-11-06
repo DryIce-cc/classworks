@@ -2,9 +2,14 @@
   <!-- 作业卡片区在上、底部那排「添加作业」在下。纵向 flex + 后者的 margin-top:auto，
        作业不满一屏时后者就贴在视口底边（见 styles/index.scss 的 .empty-subjects） -->
   <div class="grid-body">
-    <!-- 作业卡片：按实测高度分列，三列各自独立纵向堆叠（无网格行、无行对齐）。
+    <!-- 作业卡片：按实测高度分列，各列独立纵向堆叠（无网格行、无行对齐）。
+       列数只按窗口宽度分档，不看设备类型。
          分列还没按当前内容算好之前整块藏着，免得先摆一版临时位置再瞬移 -->
-    <div ref="gridContainer" class="grid-masonry" :class="{ 'grid-pending': pendingLayout }">
+    <div
+      ref="gridContainer"
+      class="grid-masonry"
+      :class="{ 'grid-pending': pendingLayout, 'grid-pending-instant': layoutHold }"
+    >
       <!-- 还没算好分列的那几轮（整块是 opacity:0 的）不要播放入场/离场动画：
            离场元素会被挂住一两帧，露出来的第一帧就可能看到临时分列的残影 -->
       <TransitionGroup
@@ -119,8 +124,20 @@ import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
 import { assignColumns as distributeColumns } from '@/utils/masonry'
 import { captureElement } from '@/utils/screenshot'
 
-// 窗口常年最大化，列数固定，不再按宽度分档
-const MAX_COLUMNS = 3
+// 列数只按窗口宽度分档，不看设备类型：手机竖屏 1 列、窄屏 2 列、
+// 普通电脑 3 列、宽屏 4 列。窗口宽度变化后重排。
+const COLUMN_BREAKPOINTS = [
+  { minWidth: 1440, columns: 4 },
+  { minWidth: 1024, columns: 3 },
+  { minWidth: 600, columns: 2 },
+]
+
+function columnsForWidth(width) {
+  for (const breakpoint of COLUMN_BREAKPOINTS) {
+    if (width >= breakpoint.minWidth) return breakpoint.columns
+  }
+  return 1
+}
 // 「点击添加作业」卡片露在视野里又没人理，3s 后就把它上滑出去
 const IDLE_SCROLL_DELAY = 3000
 // 标题行判定走文本层的 isHeadingLine，展示板这边不再另写一份正则
@@ -149,6 +166,10 @@ export default {
       layoutVersion: 0,
       // 分列刚算出来、还没渲染到 DOM 上：这一小段先藏着，等这一版真摆出来了再露
       layoutSettling: false,
+      // 列数变化时至少藏住一帧，别让旧高度排出来的临时位置闪出来
+      layoutHold: false,
+      // 窗口宽度（px）。只按宽度决定列数，窗口一变就重算
+      layoutWidth: typeof window === 'undefined' ? 0 : window.innerWidth,
     }
   },
   created() {
@@ -158,15 +179,21 @@ export default {
     this._signature = ''
     // 分列连续变化了几轮（收敛用；兜底防止一直藏下去）
     this._settlePasses = 0
+    // 列数变化时连开几轮布局校验，用序号取消旧的回调
+    this._layoutHoldSeq = 0
     // 待执行的自动上滑的定时器
     this._scrollTimer = 0
   },
   computed: {
-    // 卡片少时收缩列数，让卡片铺满可用宽度
+    // 当前窗口宽度允许的列数（不含「卡片少时收缩」）
+    responsiveColumns() {
+      return columnsForWidth(this.layoutWidth)
+    },
+    // 卡片少时收缩列数，让卡片铺满可用宽度；否则按窗口宽度分档
     effectiveColumns() {
       const count = this.sortedItems ? this.sortedItems.length : 0
       if (count <= 0) return 1
-      return Math.max(1, Math.min(count, MAX_COLUMNS))
+      return Math.max(1, Math.min(count, this.responsiveColumns))
     },
     // 渲染用的分列结果（透传方法，保证每次拿到的都是现算的）
     columnItems() {
@@ -181,7 +208,7 @@ export default {
       void this.layoutVersion
       const items = this.sortedItems || []
       if (!items.length) return false
-      return this.layoutSettling || items.some((item) => this._heights?.[item.key] == null)
+      return this.layoutHold || this.layoutSettling || items.some((item) => this._heights?.[item.key] == null)
     },
     // 每张卡各段正文的解析结果（按段切开），buildDays 共用这一份。
     // buildDays 在模板里逐帧调用，各解析一遍等于每帧白算一次；
@@ -202,12 +229,13 @@ export default {
   mounted() {
     // 首屏同步量一次（此时 DOM 已就绪、通常还未绘制），避免先闪一下再重排
     this.updateLayout()
+    this.$nextTick(() => this.updateLayout())
     // 字体后加载会改变卡片高度，加载完再平衡一次
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => this.updateLayout())
     }
     window.addEventListener('scroll', this.handleViewportChange, { passive: true })
-    window.addEventListener('resize', this.handleViewportChange, { passive: true })
+    window.addEventListener('resize', this.handleWindowResize, { passive: true })
     // 捕获阶段，用户碰一下就撤销待执行的上滑
     document.addEventListener('pointerdown', this.cancelIdleScroll, true)
     this.armIdleScroll()
@@ -221,11 +249,16 @@ export default {
   },
   beforeUnmount() {
     this.cancelIdleScroll()
+    this._layoutHoldSeq++
     window.removeEventListener('scroll', this.handleViewportChange)
-    window.removeEventListener('resize', this.handleViewportChange)
+    window.removeEventListener('resize', this.handleWindowResize)
     document.removeEventListener('pointerdown', this.cancelIdleScroll, true)
   },
   watch: {
+    // 宽度分档变了：只按列数变化处理，同一档内缩放宽高不重排
+    responsiveColumns() {
+      this.holdLayoutForColumnChange()
+    },
     paused(value) {
       if (value) {
         this.cancelIdleScroll()
@@ -241,6 +274,35 @@ export default {
     handleViewportChange() {
       this.cancelIdleScroll()
       this.armIdleScroll()
+    },
+
+    // 只按窗口宽度决定列数；宽度没变就不触发无谓的重排
+    handleWindowResize() {
+      if (window.innerWidth !== this.layoutWidth) this.layoutWidth = window.innerWidth
+      this.handleViewportChange()
+    },
+
+    // 列数一变，旧卡片高度对应的分列就作废了。先整块藏住，量完新宽度下
+    // 的真实高度、等 DOM 真正摆稳后再露，避免卡片先闪到空位再被顶下去。
+    holdLayoutForColumnChange() {
+      this.layoutHold = true
+      const seq = ++this._layoutHoldSeq
+      const nextFrame = (fn) => {
+        requestAnimationFrame(() => {
+          if (seq === this._layoutHoldSeq) fn()
+        })
+      }
+      this.$nextTick(() => {
+        this.updateLayout()
+        nextFrame(() => {
+          this.$nextTick(() => {
+            this.updateLayout()
+            nextFrame(() => {
+              this.layoutHold = false
+            })
+          })
+        })
+      })
     },
 
     // 已经在计时就别重置，否则每次重排都会把上滑往后顺延一次

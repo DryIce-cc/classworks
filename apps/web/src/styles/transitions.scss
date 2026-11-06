@@ -43,6 +43,13 @@ $standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
   opacity: 0;
 }
 
+// 列数变化时不能淡出：淡出的这 200ms 里旧高度已经按新列数摆过一版，
+// 等看清了才换成真实分列就是一次闪跳。这里直接藏住，量完再淡入
+.grid-pending-instant {
+  opacity: 0;
+  transition: none;
+}
+
 .v-list-enter-from.v-card,
 .v-list-leave-to.v-card {
   opacity: 0;
