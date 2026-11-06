@@ -8,7 +8,7 @@
 
     <template #append>
       <!-- 只在离开今天时摆出来。淡入淡出走通用那套（styles/transitions.scss 的 .fade-*） -->
-<!--      <Transition name="fade">-->
+      <Transition name="fade">
         <v-btn
           v-if="!isToday"
           class="mr-2"
@@ -18,13 +18,13 @@
         >
           回到今天
         </v-btn>
-<!--      </Transition>-->
+      </Transition>
       <span v-if="state.screenshotMatched" class="text-caption text-grey ml-1">已截图</span>
       <v-btn
+        v-if="sortedItems.length"
         icon="mdi-camera-outline"
         variant="text"
         title="截图并复制（Ctrl+C）"
-        :disabled="!sortedItems.length"
         :loading="state.capturing"
         @click="captureBoard"
       />
@@ -659,3 +659,20 @@ export default {
   },
 }
 </script>
+
+<style scoped>
+/* 「回到今天」的淡入淡出：只改 opacity，不掺位移、外边距，
+   淡出走到一半也不会挪位置 */
+.fade-enter-active {
+  transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.fade-leave-active {
+  transition: opacity 160ms cubic-bezier(0.3, 0, 1, 1);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>

@@ -164,11 +164,13 @@
     </v-card>
 
     <!-- 对话框外的一句提示：点哪儿都算完成编辑（点遮罩、点这句都一样）。
-         压在对话框正下方、水平居中，灰字加下阴影，隔着遮罩也读得出。
+         压在对话框正下方、水平居中，只用排版和字色区分层级，不加底衬。
          绝对定位挂在对话框内容容器上（那个容器 position: absolute），
          top:100% 正好落在卡片下面；pointer-events:none 让它不挡点击 -->
-    <div class="dialog-slogan">点击空白处完成编辑</div>
-    <div class="dialog-slogan" style="top: 107%; color: #bbb;">Ctrl+S / Esc</div>
+    <div class="dialog-slogan">
+      <span>点击空白处完成编辑</span>
+      <span class="dialog-slogan-keys">Esc / Ctrl+S </span>
+    </div>
   </v-dialog>
 
   <!-- 缩放条。整个面板缩着看（见 dialogZoomStyle），所以条不放在卡片里：
@@ -1699,49 +1701,35 @@ export default {
 }
 
 /* 对话框正下方那句提示。挂在对话框内容容器上（那个容器 position: absolute），
-   top:100% 落在卡片下面；pointer-events:none 让它不挡点击，点它照样关面板 */
+   top:100% 落在卡片下面；pointer-events:none 让它不挡点击，点它照样关面板。
+   不加底衬/胶囊：小字号、松字距、两级文字色，靠排版本身把主次分开 */
 .dialog-slogan {
   position: absolute;
-  top: 102%;
+  top: calc(100% + 14px);
   left: 50%;
-  transform: translate(-50%, 10px);
+  transform: translateX(-50%);
 
-  font-size: 0.8rem;
-  line-height: 2.2;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+
+  font-size: 0.75rem;
+  line-height: 1;
+  letter-spacing: 0.08em;
   white-space: nowrap;
   pointer-events: none;
 
-  isolation: isolate;
-  padding: 0 1.25em;
+  color: rgba(255, 255, 255, 0.56);
+  /* 字压在卡片上时也读得清；比原来的整块黑色虚影轻得多 */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
 }
 
-.dialog-slogan::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
+.dialog-slogan-keys {
+  padding-left: 0.75rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
 
-  /* 左右各扩 2.5em，给横向渐隐留空间；文字在 padding 1.25em 内，完全落在实心区 */
-  left: -2.5em;
-  right: -2.5em;
-  top: 50%;
-  transform: translateY(-52%);
-
-  height: 2em;
-  border-radius: 999px;
-
-  /* 横向渐变做两端渐隐，中间 #222 不透明；纵向不加 mask，交给 blur 自然衰减 */
-  background: linear-gradient(
-    to right,
-    transparent 0,
-    #161616 2.2em,
-    #161616 calc(100% - 2.2em),
-    transparent 100%
-  );
-
-  /* 关键：blur 同时柔化上下左右，垂直只溢出约 5px，不会碰到上一行文字；
-     也没有任何“渐变截断线”，胶囊轮廓被完全糊掉 */
-  filter: blur(5px);
-  will-change: filter;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.32);
 }
 
 /* 对话框比屏幕高的时候，卡片自己要滚（Vuetify 给卡片加的 overflow-y: auto）。

@@ -111,18 +111,18 @@ $standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
 //// 这几条必须放在文件最后：上面 .v-btn、.v-card、.empty-subject-card 各自都带一条
 //// transition，权重跟这里一样，靠写在后面才盖得住它们（作业编辑里那两个留空的
 //// 键位就是 .v-btn.vis-fade，被 .v-btn 那条盖掉就等于没淡）
-//.fade-enter-active {
-//  transition: opacity 180ms $standard-easing;
-//}
-//
-//.fade-leave-active {
-//  transition: opacity 120ms $standard-accelerate;
-//}
-//
-//.fade-enter-from,
-//.fade-leave-to {
-//  opacity: 0;
-//}
+.fade-enter-active {
+  transition: opacity 180ms $standard-easing;
+}
+
+.fade-leave-active {
+  transition: opacity 120ms $standard-accelerate;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
 //
 //// 用 visibility 切换显示/隐藏的那几处（元素不能真拿掉：位置或者高度得留着，
 //// 拿掉的话旁边的东西当场跳一下）。平时挂 .vis-fade，要藏的时候加 .vis-fade-off。
@@ -130,15 +130,15 @@ $standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
 //// 都还看得见，走完才真的藏起来——看着是淡出，位置和高度一点不动。
 //// 时长跟上面那套一致：进场 180ms、离场 120ms（过渡取的是变化之后那一档，
 //// 所以短的 120ms 写在 .vis-fade-off 上）
-//.vis-fade {
-//  transition:
-//    opacity 180ms $standard-easing,
-//    visibility 180ms $standard-easing;
-//}
-//
-//.vis-fade-off {
-//  opacity: 0;
-//  visibility: hidden;
-//  transition-duration: 120ms;
-//  transition-timing-function: $standard-accelerate;
-//}
+.vis-fade {
+  transition:
+    opacity 180ms $standard-easing,
+    visibility 180ms $standard-easing;
+}
+
+.vis-fade-off {
+  opacity: 0;
+  visibility: hidden;
+  transition-duration: 120ms;
+  transition-timing-function: $standard-accelerate;
+}

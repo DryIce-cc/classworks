@@ -3,13 +3,16 @@
        作业不满一屏时后者就贴在视口底边（见 styles/index.scss 的 .empty-subjects） -->
   <div class="grid-body">
     <!-- 作业卡片：按实测高度分列，三列各自独立纵向堆叠（无网格行、无行对齐）。
-         首屏那版分列是按序号摆的（高度还没量到），所以先整块藏着，量完再淡入 -->
-    <div ref="gridContainer" class="grid-masonry" :class="{ 'grid-pending': !measured }">
+         分列还没按当前内容算好之前整块藏着，免得先摆一版临时位置再瞬移 -->
+    <div ref="gridContainer" class="grid-masonry" :class="{ 'grid-pending': pendingLayout }">
+      <!-- 还没算好分列的那几轮（整块是 opacity:0 的）不要播放入场/离场动画：
+           离场元素会被挂住一两帧，露出来的第一帧就可能看到临时分列的残影 -->
       <TransitionGroup
         v-for="(col, ci) in columnItems"
         :key="ci"
         name="grid"
-        move-class="grid-move"
+        :move-class="pendingLayout ? 'grid-move-instant' : 'grid-move'"
+        :css="!pendingLayout"
         tag="div"
         class="grid-column"
       >
@@ -25,7 +28,14 @@
                  这一行没有自己的点击处理，冒泡到卡片上：不带日期进编辑面板，
                  也就是跟着展示板正在看的那天（正常情况下就是今天） -->
             <v-card-title class="hw-card-title" :style="contentStyle">
-              {{ item.name }}
+              <span class="hw-card-subject">{{ item.name }}</span>
+              <!-- 首行就是 # 行时并到科目名后面，不单独占一行；日期/标题名的颜色和字号
+                   跟正文里的小标题完全一致 -->
+              <span v-if="titleHeading(item)" class="segment-label hw-card-heading">
+                <span class="label-name">
+                  <span v-if="titleHeading(item).day" class="label-date">{{ titleHeading(item).day }}</span>{{ titleHeading(item).gap + titleHeading(item).title }}
+                </span>
+              </span>
             </v-card-title>
             <v-card-text :style="contentStyle" class="hw-card-text">
               <!-- 一天一区：同一天的那几段（正文按空行、小标题分的段）和它们之间的
@@ -42,7 +52,7 @@
                   <!-- 日期有、或者这段有自定义小标题，就出小标题：后面的日子光有正文也是要出
                        「明天的作业」的，别因为没有自定义小标题就把它吞了。
                        日期那几个字刷黄（编辑框里也是黄的，两边看齐），标题名跟正文一样颜色 -->
-                  <div v-if="day.date || block.custom" class="segment-label">
+                  <div v-if="!block.inTitle && (day.date || block.custom)" class="segment-label">
                     <span class="label-date">{{ day.date }}</span>
                     <span class="label-de">{{ day.date ? '的' : '' }}</span>
                     <span class="label-name">
@@ -137,8 +147,8 @@ export default {
     return {
       // 布局版本号：分列结果变化时才 +1，避免量高度触发无限重渲染
       layoutVersion: 0,
-      // 卡片高度还没量全（首帧），分列是临时的，先别露出来
-      measured: false,
+      // 分列刚算出来、还没渲染到 DOM 上：这一小段先藏着，等这一版真摆出来了再露
+      layoutSettling: false,
     }
   },
   created() {
@@ -146,6 +156,8 @@ export default {
     // 每张的高度里已经带上了它自己那一份卡片间距
     this._heights = {}
     this._signature = ''
+    // 分列连续变化了几轮（收敛用；兜底防止一直藏下去）
+    this._settlePasses = 0
     // 待执行的自动上滑的定时器
     this._scrollTimer = 0
   },
@@ -161,6 +173,15 @@ export default {
       // 列分配依赖字号和布局，窗口一变就得重算
       void this.layoutVersion
       return this.assignColumns()
+    },
+    // 分列还没按当前内容算好、也没摆到 DOM 上：整块先藏着。
+    // 露出来的时候，位置就是最终位置，不会先摆一版临时分列再瞬移
+    pendingLayout() {
+      // 高度存在非响应式的 _heights 里，靠 layoutVersion 触发重算
+      void this.layoutVersion
+      const items = this.sortedItems || []
+      if (!items.length) return false
+      return this.layoutSettling || items.some((item) => this._heights?.[item.key] == null)
     },
     // 每张卡各段正文的解析结果（按段切开），buildDays 共用这一份。
     // buildDays 在模板里逐帧调用，各解析一遍等于每帧白算一次；
@@ -304,18 +325,20 @@ export default {
         if (el.dataset.key) heights[el.dataset.key] = el.offsetHeight + gap
       })
       this._heights = heights
-      // 每张卡片都量到了，分列才算靠得住。量全之前一直挂着临时摆位，
-      // 首屏就会先看见一个错的布局再跳成对的，不如等量全了再淡入
-      if (!this.measured) {
-        this.measured = this.sortedItems.every((item) => heights[item.key] != null)
-      }
       const sig = this.assignColumns()
         .map((col) => col.map((i) => i.key).join(','))
         .join('|')
       if (sig !== this._signature) {
         this._signature = sig
         this.layoutVersion++
+        // 分列变了：这一版还没渲染到 DOM 上，现在露出来看到的仍是上一版。
+        // 继续藏着，等下一轮量出来还是这个分列，才算真的算好了（留个上限兜底）
+        this.layoutSettling = this._settlePasses++ < 4
+        return
       }
+      this._settlePasses = 0
+      // 分列和上一轮一致，DOM 里摆的就是算好的那一版，可以露出来了
+      this.layoutSettling = false
     },
     // 一张卡片按天分块：一天一块，块里是那天的正文按空行和标题行分的几段。
     // 每段有标题行就是「日期的 + 标题名」，没有就是「日期的作业」，
@@ -329,7 +352,7 @@ export default {
       const parsed = this.parsedSegments(item)
       for (let index = 0; index < segments.length; index++) {
         const segment = segments[index]
-        const blocks = (parsed[index] || []).map((para) => {
+        const blocks = (parsed[index] || []).map((para, paraIndex) => {
           // 没小标题的那一段就叫「作业」，没有颜色、没有自己的日期
           const head = para.heading || { day: '', gap: '', title: '作业' }
           return {
@@ -337,10 +360,14 @@ export default {
             day: head.day,
             title: head.gap + head.title,
             lines: para.lines,
+            // 作业文本首行就是 # 行：这一块的标题已经并到科目名后面了，
+            // 正文照常渲染，不再重复出小标题
+            inTitle: index === 0 && paraIndex === 0 && para.heading !== null,
           }
         })
-        // 空的段（比如正文只剩空行）不占一块
-        const visible = blocks.filter((block) => block.lines.length)
+        // 空的段（比如正文只剩空行）不占一块；只有 # 行没有正文的段要留下，
+        // 不然那一行小标题会被整段吞掉
+        const visible = blocks.filter((block) => block.lines.length || block.custom)
         if (!visible.length) continue
         // 这一天只有一行、而且那一行有序号：把序号藏起来。
         // 一天一个数，不是整张卡一个数——卡片跨了几天，各天各算各的
@@ -354,6 +381,12 @@ export default {
         })
       }
       return days
+    },
+    // 卡片首行的 # 小标题（没有就是 null）。展示时并到科目名后面，
+    // 和 buildDays 里标 inTitle 的那一块共用同一份解析缓存
+    titleHeading(item) {
+      const parsed = this.parsedSegments(item)
+      return parsed[0]?.[0]?.heading || null
     },
     // 一张卡各段正文的解析结果，按 segments 的顺序排。
     // 正常走 parsedCards 那份缓存；缓存里没有（理论上不会发生）就现解析一份兜底，
@@ -444,9 +477,18 @@ export default {
   cursor: pointer;
 }
 
-/* 标题字号由 contentStyle 绑定，与正文一致 */
+/* 标题字号由 contentStyle 绑定，与正文一致。
+   科目名和首行小标题排在同一行，按普通行内文字自然换行、不省略。
+   v-card-title 自带 nowrap + ellipsis，这里一并覆盖掉 */
 .hw-card-title {
   padding: 8px 0 6px 12px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.hw-card-subject {
+  overflow-wrap: anywhere;
 }
 
 /* 上内边距即科目名到首个小标题（或正文）的间距 */
@@ -469,7 +511,7 @@ export default {
   margin-bottom: var(--hw-gap);
 }
 
-/* 日期和「的」不压缩，自定义小标题过长时单行省略。
+/* 日期和「的」不压缩。
    这一组连「的」一起刷黄——编辑框里 hl-date 盖的也是「明天的」这几个字，
    两边看齐。黄得和那边一样（那边是 #FFEB3B） */
 .label-date,
@@ -479,15 +521,22 @@ export default {
   color: #ffeb3b;
 }
 
-/* 自定义小标题过长时单行省略 */
+/* 自定义小标题自动换行，不省略 */
 .label-name {
   flex: 0 1 auto;
   min-width: 0;
   color: var(--hw-label-gray);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* pre 才能保住小标题里多写的空格，同时保持单行 */
-  white-space: pre;
+  overflow-wrap: anywhere;
+  /* pre-wrap 才能保住小标题里多写的空格，同时允许折行 */
+  white-space: pre-wrap;
+}
+
+/* 标题行这里要压过 .segment-label 的 flex：改成行内排布，
+   才能跟在科目名后面自然折行，而不是整体另起一行 */
+.hw-card-title .hw-card-heading {
+  display: inline;
+  margin-left: 0.5em;
+  margin-bottom: 0;
 }
 
 /* 深色主题下默认灰要跟着提亮，不然小标题名比正文还暗，读不出来。
