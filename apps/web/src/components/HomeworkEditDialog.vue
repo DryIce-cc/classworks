@@ -19,22 +19,6 @@
       @mousedown="holdFocus"
       @contextmenu="blockMenu"
     >
-      <!-- 顶部倒计条：停手一会儿就自动关掉，防的是误触打开。
-           卡片顶上的一条细线，面板开着就一直挂着；倒计还剩超过 COUNTDOWN_BAR_DELAY 时
-           满格不动，剩不到时才从满格往下走，走完正好赶上关闭。中途一动立刻收回满格。
-           脱开文档流盖在卡片上（.progress-bar 的全站口径），钉在滚动区顶边不跟着正文滚，
-           见下面的 .close-countdown。
-           淡入淡出走通用那套（styles/transitions.scss 的 .fade-*） -->
-      <Transition name="fade">
-        <div v-if="countdownActive" class="close-countdown progress-bar">
-          <div
-            class="close-countdown-bar"
-            :class="{ 'close-countdown-bar-drain': countdownBarDraining }"
-            :style="closeCountdownStyle"
-          />
-        </div>
-      </Transition>
-
       <v-card-title class="hw-title">
         {{ title }}
       </v-card-title>
@@ -265,14 +249,10 @@ const NEAR_PADDING = 15
 const IDLE_CLOSE_DELAY = 10000
 // 动过一次之后的倒计时长：之后再无动作 20s 关闭，有动作就重置成这个值重新算
 const IDLE_CLOSE_RESET_DELAY = 20000
-// 倒计只剩这么多秒时，顶上那条细线才挂出来，此前卡片的顶边干干净净。
-// 挂出来就是满格，往下走完正好赶上关闭，中途一动就收回去重新算。
-// 和 IDLE_CLOSE_DELAY 同值，所以刚打开就摆着；动过之后的那 20s 只在最后 10s 摆
-const COUNTDOWN_BAR_DELAY = 10000
 // 自动关闭前的最后这么一段时间，整块面板淡下去：还剩 3s 才提醒，
 // 早了会显得一直在闪，晚了来不及反应
 const CLOSE_WARN_DELAY = 3000
-// 倒计定时器醒来的间隔。够密，条出现那一刻的误差看不出来；够疏，白跑的轮询少
+// 倒计定时器醒来的间隔。够密，自动关闭的误差看不出来；够疏，白跑的轮询少
 const COUNTDOWN_TICK = 200
 // 正文末尾至少留几个空行，方便接着写下一条
 const DEFAULT_BLANK_LINES = 1
@@ -377,15 +357,8 @@ export default {
       // 模板要用缩放条的范围，得挂在实例上——Options API 的模板只看得到 data 里的
       zoomMin: ZOOM_MIN,
       zoomMax: ZOOM_MAX,
-      // 顶部倒计条是否挂着。倒计一起就在，直到面板关闭
-      countdownActive: false,
-      // 条是否在往下走：倒计剩不到 COUNTDOWN_BAR_DELAY 才是。从满格起走，
-      // 走完这一轮正好赶上关闭，中途一动立刻收回满格
-      countdownBarDraining: false,
       // 倒计进入最后 3s：面板淡下去提醒。一有动作立刻回实
-      closeWarn: false,
-      // 这一轮从满格走到空要多久：起走那一刻到关闭还剩多少，动画时长跟它对齐
-      countdownBarDuration: 0
+      closeWarn: false
     }
   },
 
@@ -625,10 +598,6 @@ export default {
     canEndLine() {
       return hasContent(this.currentBodyLine)
     },
-    // 条挂出来那一刻到关闭还剩多久，动画就走多久，两边不会差半拍
-    closeCountdownStyle() {
-      return { animationDuration: `${this.countdownBarDuration}ms` }
-    },
   },
   watch: {
     // 日期选择器收起来之后把焦点还给输入框。
@@ -708,7 +677,6 @@ export default {
       // 新的一轮从实心开始，上一次残留的淡化不带过来
       this.closeWarn = false
       this._closeDeadline = performance.now() + delay
-      this.countdownActive = true
       this._closeTimer = window.setInterval(this.tickCloseCountdown, COUNTDOWN_TICK)
       this.tickCloseCountdown()
     },
@@ -717,13 +685,10 @@ export default {
       if (this._closeTimer) window.clearInterval(this._closeTimer)
       this._closeTimer = 0
       this._closeDeadline = 0
-      this.countdownActive = false
-      this.countdownBarDraining = false
       // closeWarn 不在这里清：关闭时面板正淡着走，清掉会先亮回来再缩
     },
 
-    // 轮询醒来：到点了关面板；剩下不到 COUNTDOWN_BAR_DELAY 才让条往下走。
-    // 提前于那一刻满格不动，不是一个从头就开始的进度——看着像还早着才像
+    // 轮询醒来：到点了关面板；最后 3s 把面板淡下去提醒
     tickCloseCountdown() {
       if (!this._closeTimer) return
       const left = this._closeDeadline - performance.now()
@@ -732,32 +697,23 @@ export default {
         this.handleClose()
         return
       }
-      const drain = left <= COUNTDOWN_BAR_DELAY
-      // 只在起走的那一刻改一次 duration：这一轮里条得一直走完，
-      // 每轮重算会让动画时长一直跳，视觉上是条在抖
-      if (drain !== this.countdownBarDraining) {
-        this.countdownBarDraining = drain
-        if (drain) this.countdownBarDuration = left
-      }
       // 最后 3s 才淡下去，之前一直是实心的
       const warn = left <= CLOSE_WARN_DELAY
       if (warn !== this.closeWarn) this.closeWarn = warn
     },
 
-    // 有人动了：截止时刻推到 IDLE_CLOSE_RESET_DELAY 之后，条收回满格。
+    // 有人动了：截止时刻推到 IDLE_CLOSE_RESET_DELAY 之后。
     // 面板没开着（定时器早清了）就什么都不做，白名单外的按键（比如修饰键）也照样算数。
     // 值本来是 false 时这次赋值不会触发重渲染
     resetCloseCountdown() {
       if (!this._closeTimer) return
       this._closeDeadline = performance.now() + IDLE_CLOSE_RESET_DELAY
-      this.countdownBarDraining = false
       this.closeWarn = false
     },
 
     // 页面看不见时（切了标签页、窗口最小化或被完全遮住）不计表：
     // 人在别处忙不算「一动不动」，回来反而该重罚，所以从头给一整段
     // IDLE_CLOSE_RESET_DELAY，不再按误触的 IDLE_CLOSE_DELAY 算。
-    // 条也跟着重来——startCloseCountdown 会把它收回满格，重新等最后那一段
     handleVisibilityChange() {
       if (document.hidden) {
         this.stopCloseCountdown()
@@ -1728,49 +1684,6 @@ export default {
 </script>
 
 <style scoped>
-/* 顶部倒计条：贴在卡片顶边的一条细线，倒计走完就自动关掉面板。
-   一直挂着，剩得还久时就是满格的一条细线，不抢注意力。
-   颜色取 currentColor 再压到很低的透明度，深色下是浅灰、浅色下是深灰。
-   脱开文档流是 .progress-bar 给的全站口径（见 styles/global.scss），
-   下面只改这条线自己的：钉在滚动区顶边、高 1px */
-.close-countdown {
-  /* 对话框比屏幕高时滚动的是卡片本身（见 .hw-card），absolute 会跟着正文滚上去。
-     sticky 要留在文档流里才钉得住，所以拿回 1px 的位置，再用负外边距还回去——
-     排版一点不动，露出/收起都不会让标题挪一挪 */
-  position: sticky;
-  top: 0;
-  height: 1px;
-  margin-bottom: -1px;
-  overflow: hidden;
-  /* 纯装饰，挡在标题上面也不能挡点击 */
-  pointer-events: none;
-}
-
-.close-countdown-bar {
-  height: 100%;
-  background: currentColor;
-  opacity: 0.2;
-  transform-origin: left center;
-}
-
-/* 倒计进入最后一段才挂上这个类，动画才从头走一遍。类一撤，条立刻回到满格 */
-.close-countdown-bar-drain {
-  animation-name: close-countdown-drain;
-  animation-timing-function: linear;
-  /* forwards：走完后停在空处，不会闪回满格 */
-  animation-fill-mode: forwards;
-}
-
-/* 时长由 closeCountdownStyle 绑进来，取的是起走那一刻到关闭还剩的时间 */
-@keyframes close-countdown-drain {
-  from {
-    transform: scaleX(1);
-  }
-  to {
-    transform: scaleX(0);
-  }
-}
-
 .hw-title {
   margin-left: 7px;
   margin-top: 14px;

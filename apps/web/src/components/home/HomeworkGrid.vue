@@ -125,21 +125,15 @@ import { splitContent } from '@/utils/homeworkList'
 import { parseHeadingLine } from '@/utils/homeworkReserve'
 import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
 import { captureElement } from '@/utils/screenshot'
+import {
+  buildMasonryLayoutsAsync,
+  fillSpanHoles,
+  measureCardsAsync,
+  TRACK_COUNT,
+  COLUMN_GAP,
+  ROW_GAP,
+} from '@/utils/masonry'
 
-// 列数只按窗口宽度分档，不看设备类型：手机竖屏 1 列、窄屏 2 列、
-// 普通电脑 3 列、宽屏 4 列。窗口宽度变化后重排。
-const COLUMN_BREAKPOINTS = [
-  { minWidth: 1440, columns: 4 },
-  { minWidth: 1024, columns: 3 },
-  { minWidth: 600, columns: 2 },
-]
-
-function columnsForWidth(width) {
-  for (const breakpoint of COLUMN_BREAKPOINTS) {
-    if (width >= breakpoint.minWidth) return breakpoint.columns
-  }
-  return 1
-}
 // 「点击添加作业」卡片露在视野里又没人理，3s 后就把它上滑出去
 const IDLE_SCROLL_DELAY = 3000
 // 标题行判定走文本层的 isHeadingLine，展示板这边不再另写一份正则
@@ -165,6 +159,9 @@ export default {
     // 换天时整块硬切：这一帧不加任何卡片过渡，避免旧卡离场、新卡入场
     // 和添加卡各自错开，看起来像闪了一下
     instant: { type: Boolean, default: false },
+    // 当前展示的日期。按天缓存布局，切回看过的某天时先直接用缓存，
+    // 再在后台重算校正（缓存只在内存里，不落盘）
+    dayKey: { type: String, default: '' },
   },
   emits: ['open-dialog'],
   data() {
@@ -179,28 +176,43 @@ export default {
     }
   },
   created() {
-    // 实测的卡片要横跨几行（非响应式，靠 layoutVersion 触发重算）
-    this._spans = {}
+    // 求解结果的列宽、每张卡的 grid 位置（非响应式，靠 layoutVersion 触发重算）
+    this._layout = null
+    this._layoutSignature = ''
+    this._layoutTimer = 0
+    // 每次真正开算时递增；卸载时也递增，用来丢弃未完成的结果
+    this._layoutToken = 0
+    // 每次内容变化递增；用来判断算完后是否还要补算
+    this._layoutRequest = 0
+    // 同一时间只允许一份测量/求解
+    this._layoutRunning = false
+    // 有内容变化但还没重算
+    this._layoutDirty = false
+    // 上一版布局对应的每张卡内容签名，编辑预览据此判断哪张卡变了。
+    // 只拿来和本次内容比，不参与完整求解的签名。
+    this._fastSignatures = new Map()
+    // 按展示日期缓存布局：某天算过一次后，切回该天先复用，再后台校正。
+    // 只活在当前页面实例里，刷新即清空
+    this._layoutCache = new Map()
+    this._layoutDayKey = null
+    this._lastViewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight
     // 待执行的自动上滑的定时器
     this._scrollTimer = 0
     // 首屏等动画收尾的 rAF 句柄
     this._revealRaf = 0
   },
   computed: {
-    // 当前窗口宽度允许的列数（不含「卡片少时收缩」）
-    responsiveColumns() {
-      return columnsForWidth(this.layoutWidth)
-    },
-    // 卡片少时收缩列数，让卡片铺满可用宽度；否则按窗口宽度分档
-    effectiveColumns() {
-      const count = this.sortedItems ? this.sortedItems.length : 0
-      if (count <= 0) return 1
-      return Math.max(1, Math.min(count, this.responsiveColumns))
-    },
-    // 列数写进内联样式：CSS Grid 负责把卡片放进各列，跨列换位时节点不换组
+    // 列宽和每张卡的格子位置写进内联样式：CSS Grid 负责落位，
+    // 换列/跨列只是换格子，节点不换组，TransitionGroup 的 FLIP 还能用。
     gridStyle() {
+      void this.layoutVersion
+      const layout = this._layout
+      if (!layout || !layout.columns.length) {
+        return { gridTemplateColumns: 'repeat(1, minmax(0, 1fr))' }
+      }
       return {
-        gridTemplateColumns: `repeat(${this.effectiveColumns}, minmax(0, 1fr))`,
+        gridTemplateColumns: layout.columns.map((col) => `${col.width}px`).join(' '),
+        columnGap: `${layout.gap}px`,
       }
     },
     // 整块只在首屏量好前隐形。换日期/增删卡不藏整块：
@@ -225,14 +237,15 @@ export default {
     },
   },
   mounted() {
-    // 首屏同步量一次（此时 DOM 已就绪、通常还未绘制），避免先闪一下再重排
-    this.updateLayout()
-    this.$nextTick(() => {
-      if (this.ready && this.updateLayout() === false) this.revealWhenSettled()
-    })
+    // 首屏量一次（异步测量 + 求解，不阻塞首屏交互）
+    this._lastViewportHeight = window.innerHeight
+    this.scheduleLayout(0)
     // 字体后加载会改变卡片高度，加载完再平衡一次
     if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(() => this.updateLayout())
+      document.fonts.ready.then(() => {
+        this._layoutSignature = ''
+        this.scheduleLayout(0)
+      })
     }
     window.addEventListener('scroll', this.handleViewportChange, { passive: true })
     window.addEventListener('resize', this.handleWindowResize, { passive: true })
@@ -241,48 +254,51 @@ export default {
     this.armIdleScroll()
   },
   updated() {
-    this.$nextTick(() => {
-      // 这一版的分列刚变、DOM 上还是上一版的摆法：等下一轮渲染完再补动画
-      if (this.updateLayout()) {
-        this.armIdleScroll()
-        return
-      }
-      // 分列已稳定：等入场/退场/换位的过渡都收尾再露，避免露出半截动画
-      if (this.ready) this.revealWhenSettled()
-      // 卡片增减会改变视野里的那一段，重新判断要不要计时
-      this.armIdleScroll()
-    })
+    // 换天时先把这一天上次算好的布局取出来，卡片立刻有位可站；
+    // 取不到才让下面的近似逻辑兜底（此时旧布局不属于新的一天，不能套用）
+    this.restoreCachedLayout()
+    if (this._layoutDayKey === this.dayKey && this._layout) {
+      // 任何变化都分两步：先立刻上一版便宜的近似（宽度变了按比例缩列宽，
+      // 正文变了按现有列位撑/收卡片），真正的测量求解随后在后台异步跑。
+      // 编辑面板开着也照常算，输入不被阻塞，也不需要等到编辑结束。
+      this.applyQuickResize()
+      this.applyFastPreview()
+      this.cacheCurrentLayout()
+    }
+    this.scheduleLayout(this.paused ? 0 : 140)
+    // 卡片增减会改变视野里的那一段，重新判断要不要计时
+    this.armIdleScroll()
   },
   beforeUnmount() {
     this.cancelIdleScroll()
+    window.clearTimeout(this._layoutTimer)
+    this._layoutToken++
     cancelAnimationFrame(this._revealRaf)
     window.removeEventListener('scroll', this.handleViewportChange)
     window.removeEventListener('resize', this.handleWindowResize)
     document.removeEventListener('pointerdown', this.cancelIdleScroll, true)
   },
   watch: {
+    // 日期一变，在子组件重新渲染之前就把缓存布局换上，
+    // 避免新一天的卡片先以「未定位」状态闪一帧
+    dayKey() {
+      this.restoreCachedLayout()
+    },
     // 数据读完再量一遍，量稳了才放行首屏
     ready(value) {
       if (!value) {
         this.layoutReady = false
         return
       }
-      this.$nextTick(() => {
-        if (this.updateLayout() === false) this.revealWhenSettled()
-      })
-    },
-    // 列数变了：直接按新宽度重排，不淡出、不遮整块
-    effectiveColumns() {
-      this.$nextTick(() => this.updateLayout())
+      this.scheduleLayout(0)
     },
     paused(value) {
       if (value) {
         this.cancelIdleScroll()
         return
       }
-      // 面板关掉了：量一遍最终的版式，再重新判断要不要计时
-      this.updateLayout()
-      this.$nextTick(() => this.armIdleScroll())
+      // 面板关掉了：立即补算一次，再重新判断要不要计时
+      this.scheduleLayout(0)
     },
   },
   methods: {
@@ -293,10 +309,65 @@ export default {
       this.armIdleScroll()
     },
 
-    // 只按窗口宽度决定列数；宽度没变就不触发无谓的重排
+    // 窗口宽度/高度变化：防抖后重算；滚动只影响自动上滑，不重排
     handleWindowResize() {
-      if (window.innerWidth !== this.layoutWidth) this.layoutWidth = window.innerWidth
+      let changed = false
+      let widthChanged = false
+      if (window.innerWidth !== this.layoutWidth) {
+        this.layoutWidth = window.innerWidth
+        changed = true
+        widthChanged = true
+      }
+      if (window.innerHeight !== this._lastViewportHeight) {
+        this._lastViewportHeight = window.innerHeight
+        changed = true
+      }
+      // 宽度先按比例缩放列宽（列数不变）把画面立即贴合新视口，
+      // 再排期完整求解；不然要等测量算完才不再横向溢出。
+      if (widthChanged) this.applyQuickResize()
+      if (changed) this.scheduleLayout()
       this.handleViewportChange()
+    },
+
+    // 异步排期：同一时间只跑一份计算，算完先应用这份（实时预览），
+    // 如果算的过程中又来了输入，再立刻补算最新内容。旧结果不会堵住新结果。
+    scheduleLayout(delay = 140) {
+      this._layoutDirty = true
+      this._layoutRequest++
+
+      // 正在算：不打断，算完自动补算最新内容
+      if (this._layoutRunning) return
+
+      // 已有排期：不重置计时，保证连续输入时也能按节奏刷新
+      if (delay > 0 && this._layoutTimer) return
+      if (delay <= 0) {
+        window.clearTimeout(this._layoutTimer)
+        this._layoutTimer = 0
+      }
+
+      const run = () => {
+        this._layoutTimer = 0
+        if (this._layoutRunning) return
+        const token = ++this._layoutToken
+        const request = this._layoutRequest
+        this._layoutRunning = true
+        this.$nextTick(() => {
+          this.updateLayout(token, request)
+            .then((changed) => {
+              this._layoutRunning = false
+              if (token !== this._layoutToken) return
+              if (changed) this.armIdleScroll()
+              if (this.ready) this.revealWhenSettled()
+              // 只有本轮计算期间又来了新请求才补算，避免空数据时 0ms 自循环
+              if (this._layoutDirty && this._layoutRequest !== request) this.scheduleLayout(0)
+            })
+            .catch(() => {
+              this._layoutRunning = false
+            })
+        })
+      }
+
+      this._layoutTimer = window.setTimeout(run, Math.max(0, delay))
     },
 
     // 已经在计时就别重置，否则每次重排都会把上滑往后顺延一次
@@ -332,16 +403,32 @@ export default {
       return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
     },
 
-    // 还没量到高度（刚加进来、还没落位）的卡片先隐形，等行数算好再露面
+    // 还没量到位置（刚加进来、还没落位）的卡片先隐形，等布局算好再露面
     isPlaced(item) {
       void this.layoutVersion
-      return this._spans?.[item.key] != null
+      return !!this._layout?.placements?.has(item.key)
     },
 
-    // 卡片占几行：行高 1px、行距 11px，往上取整到能容下实测高度
+    // 卡片在网格里的显式位置：列、跨几列、从第几行开始、跨几行。
+    // 行高 1px、row-gap 0，所以行号就是像素；卡片之间的 11px 由求解器的 y 留出。
+    // 起止都往上取整，保证前一张的底不会压到后一张的头。
     itemStyle(item) {
       void this.layoutVersion
-      return { gridRowEnd: `span ${this._spans?.[item.key] || 1}` }
+      const placement = this._layout?.placements?.get(item.key)
+      if (!placement) return {}
+      const start = Math.ceil(placement.y)
+      const end = Math.max(start + 1, Math.ceil(placement.y + placement.height))
+      // 为填平跨列卡上方的洞而多出来的高度，落到卡片底部内边距上；
+      // 卡片外框仍然正好占满 grid 行，卡与卡之间保持统一的 11px
+      const stretch = Math.max(
+        0,
+        placement.height - (placement.naturalHeight != null ? placement.naturalHeight : placement.height),
+      )
+      return {
+        gridColumn: `${placement.col + 1} / span ${placement.span}`,
+        gridRow: `${start + 1} / ${end + 1}`,
+        '--hw-stretch': `${stretch}px`,
+      }
     },
 
     // 离场卡片钉在原位（实现见 utils/domHold，与设置页共用同一份）
@@ -399,31 +486,355 @@ export default {
       this.layoutReady = true
     },
 
-    // 实测每张卡片高度，换算成网格行数。行数变了才触发重渲染，保证收敛不循环
-    updateLayout() {
+    // 内容/宽度/可用高度没变就不重算。签名只看会影响高度的输入，
+    // 避免 layoutVersion++ 引起的 updated 再算一遍，形成死循环。
+    layoutSignature(W, availableHeight) {
+      const items = this.sortedItems || []
+      const content = items
+        .map((item) => {
+          const segments = item.segments || []
+          return (
+            item.key +
+            ':' +
+            (item.name || '') +
+            ':' +
+            segments.map((segment) => segment.content || '').join('\u0001')
+          )
+        })
+        .join('\u0002')
+      const style = this.contentStyle ? JSON.stringify(this.contentStyle) : ''
+      return `${W}|${Math.round(availableHeight)}|${style}|${content}`
+    },
+
+    // 宽度变了先做便宜的近似：列数、每张卡跨几列都不动，列宽按旧宽度占比
+    // 缩放到新的内容宽度，卡片横向位置跟着列走。高度先沿用上一版实测值，
+    // 等后台完整求解再把折行后的真实高度补上。
+    applyQuickResize() {
+      const layout = this._layout
       const container = this.$refs.gridContainer
-      if (!container) return false
-      const styles = window.getComputedStyle(container)
-      const rowHeight = parseFloat(styles.gridAutoRows) || 1
-      // row-gap 为 0，卡片间距靠 span 预留；否则整数行的余数会叠在
-      // 每张卡下面，间距一张一个样
-      const rowGap = parseFloat(styles.getPropertyValue('--grid-row-gap')) || 0
-      const spans = {}
-      let changed = false
-      container.querySelectorAll('.grid-item').forEach((el) => {
-        const key = el.dataset.key
-        if (!key) return
-        const span = Math.max(1, Math.ceil((el.offsetHeight + rowGap) / rowHeight))
-        spans[key] = span
-        if (this._spans?.[key] !== span) changed = true
+      if (!layout || !container || !layout.columns || !layout.columns.length) return false
+      const W = Math.round(container.clientWidth)
+      if (!W || W === layout.W) return false
+      const oldW = layout.W
+      if (!oldW) return false
+      const gap = layout.gap
+
+      const totalOld = layout.columns.reduce((sum, col) => sum + col.width, 0)
+      const totalNew = W - gap * (layout.columns.length - 1)
+      if (totalOld <= 0 || totalNew <= 0) return false
+
+      let x = 0
+      const columns = layout.columns.map((col) => {
+        const width = (col.width / totalOld) * totalNew
+        const next = { ...col, x, width }
+        x += width + gap
+        return next
       })
-      this._spans = spans
-      if (changed) {
-        // 行数变了：这一版还没写到 DOM 上，下一轮渲染完再看
-        this.layoutVersion++
+
+      const spanWidth = (col, span) => {
+        let width = 0
+        for (let k = col; k < col + span; k++) {
+          width += columns[k].width + (k > col ? gap : 0)
+        }
+        return width
+      }
+
+      const placements = new Map()
+      for (const [key, placement] of layout.placements) {
+        placements.set(key, {
+          ...placement,
+          x: columns[placement.col].x,
+          width: spanWidth(placement.col, placement.span),
+        })
+      }
+
+      this._layout = { ...layout, W, columns, placements }
+      this.layoutVersion++
+      return true
+    },
+
+    // 单张卡的内容签名。只看会影响高度的字段，坐标/样式变化不算。
+    itemSignature(item) {
+      const segments = item.segments || []
+      return (
+        item.key +
+        ':' +
+        (item.name || '') +
+        ':' +
+        segments.map((segment) => segment.content || '').join('\u0001')
+      )
+    },
+
+    snapshotFastSignatures() {
+      const next = new Map()
+      for (const item of this.sortedItems || []) {
+        next.set(item.key, this.itemSignature(item))
+      }
+      this._fastSignatures = next
+    },
+
+    // 把当前这版布局记到所属日期下。布局对象每次都是整体替换，
+    // 缓存里存的引用不会被后续的快速推演改脏
+    cacheCurrentLayout() {
+      if (!this._layout || this._layoutDayKey !== this.dayKey) return
+      const key = this.dayKey || ''
+      this._layoutCache.delete(key)
+      this._layoutCache.set(key, {
+        layout: this._layout,
+        signatures: new Map(this._fastSignatures),
+      })
+      // 只是切换日期的即时预览，没必要无限囤；超过 24 天丢掉最久没用的
+      while (this._layoutCache.size > 24) {
+        this._layoutCache.delete(this._layoutCache.keys().next().value)
+      }
+    },
+
+    // 切到某天时先恢复该天的缓存布局。返回 true 表示这次确实换了布局，
+    // 后续的快速推演可以基于它继续改高度。缓存里的宽度是上次那天的宽度，
+    // 若当前容器宽度不同，紧接着的 applyQuickResize 会按列宽比例缩放。
+    restoreCachedLayout() {
+      if (this.dayKey === this._layoutDayKey) return false
+      const entry = this._layoutCache.get(this.dayKey)
+      if (!entry) {
+        // 没缓存：旧布局不属于这一天，别拿它套新日期的卡片
+        this._layoutDayKey = null
+        return false
+      }
+      this._layout = entry.layout
+      this._fastSignatures = new Map(entry.signatures)
+      // 清空签名，强制后台再完整算一次，校正期间可能发生的正文/字体变化
+      this._layoutSignature = ''
+      this._layoutDayKey = this.dayKey
+      this.layoutVersion++
+      return true
+    },
+
+    // 编辑预览的本地重排：不重新求解列数/列位，只按现有 col/span 从上往下
+    // 重新摞一遍。改过的卡按自己的列宽重新量内容高度，后面的卡自然被推下去
+    // 或拉上来。返回 false 表示这次变化本地兜不住，交给 scheduleLayout。
+    applyFastPreview() {
+      const layout = this._layout
+      const container = this.$refs.gridContainer
+      if (!layout || !container || !layout.placements) return false
+      const W = Math.round(container.clientWidth)
+      if (!W || W !== layout.W) return false
+
+      const items = this.sortedItems || []
+      if (!items.length) return false
+      const signatures = new Map()
+      const changed = []
+      for (const item of items) {
+        if (!layout.placements.has(item.key)) return false
+        const signature = this.itemSignature(item)
+        signatures.set(item.key, signature)
+        if (this._fastSignatures.get(item.key) !== signature) changed.push(item)
+      }
+      // 卡的数量变了（多一张/少一张）同样交给完整求解
+      if (signatures.size !== layout.placements.size) return false
+      if (!changed.length) {
+        this._fastSignatures = signatures
         return true
       }
-      return false
+
+      const heights = this.measurePreviewHeights(changed, layout, container)
+      if (!heights) return false
+
+      const columnCount = layout.columns.length
+      const colBottom = new Float64Array(columnCount)
+      const list = []
+      items.forEach((item, index) => {
+        const old = layout.placements.get(item.key)
+        const naturalHeight = heights.has(item.key)
+          ? heights.get(item.key)
+          : old.naturalHeight != null
+            ? old.naturalHeight
+            : old.height
+        let y = colBottom[old.col]
+        for (let k = old.col + 1; k < old.col + old.span; k++) {
+          if (colBottom[k] > y) y = colBottom[k]
+        }
+        list.push({
+          ...old,
+          index,
+          y,
+          height: naturalHeight,
+          naturalHeight,
+          bottom: y + naturalHeight,
+        })
+        for (let k = old.col; k < old.col + old.span; k++) {
+          colBottom[k] = y + naturalHeight + ROW_GAP
+        }
+      })
+
+      // 跨列卡上方的洞按同一套规则重新分摊，避免改一张卡后洞被拉长
+      const filled = fillSpanHoles(list, columnCount, ROW_GAP)
+      const placements = new Map()
+      const colHeights = new Float64Array(columnCount)
+      for (const placement of filled) {
+        const item = items[placement.index]
+        if (!item) return false
+        placements.set(item.key, placement)
+        for (let k = placement.col; k < placement.col + placement.span; k++) {
+          if (placement.bottom > colHeights[k]) colHeights[k] = placement.bottom
+        }
+      }
+
+      const columns = layout.columns.map((col, index) => ({
+        ...col,
+        height: colHeights[index],
+      }))
+      this._layout = {
+        ...layout,
+        columns,
+        placements,
+        max: Math.max(0, ...colHeights),
+      }
+      this._fastSignatures = signatures
+      this.layoutVersion++
+      return true
+    },
+
+    // 只量改动过的卡片：克隆到隐藏容器里，按它现在占的列宽取自然高度。
+    // 先全部挂上再统一读数，一次布局就能量完。
+    measurePreviewHeights(changed, layout, container) {
+      const cards = new Map()
+      container.querySelectorAll('.grid-item[data-key]').forEach((el) => {
+        const card = el.querySelector('.hw-card')
+        if (card) cards.set(el.dataset.key, card)
+      })
+      const holder = document.createElement('div')
+      holder.style.cssText =
+        'position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;width:0;height:0;overflow:visible;'
+      ;(container.parentElement || container).appendChild(holder)
+      const entries = []
+      try {
+        for (const item of changed) {
+          const card = cards.get(item.key)
+          const placement = layout.placements.get(item.key)
+          if (!card || !placement) return null
+          const clone = card.cloneNode(true)
+          clone.style.height = 'auto'
+          clone.style.width = placement.width + 'px'
+          clone.style.maxWidth = 'none'
+          clone.style.boxSizing = 'border-box'
+          holder.appendChild(clone)
+          entries.push([item.key, clone])
+        }
+        const result = new Map()
+        for (const [key, clone] of entries) result.set(key, clone.offsetHeight)
+        return result
+      } finally {
+        holder.remove()
+      }
+    },
+
+    // 量卡片 → 求“舒适布局”：可读宽度是硬约束，高度只决定列数取舍。
+    // 有放得进首屏的方案时按列数从少到多挑第一个；都放不下时取总高度最小的舒适布局。
+    async updateLayout(token, request = this._layoutRequest) {
+      const container = this.$refs.gridContainer
+      if (!container) return false
+      const W = Math.round(container.clientWidth)
+      if (!W) return false
+
+      const rect = container.getBoundingClientRect()
+      const topInDocument = rect.top + window.scrollY
+      const bottomReserve = this.addableSubjects?.length ? 120 : 0
+      const availableHeight = Math.max(
+        320,
+        window.innerHeight - topInDocument - bottomReserve - 24,
+      )
+      const signature = this.layoutSignature(W, availableHeight)
+      if (signature === this._layoutSignature) {
+        if (request === this._layoutRequest) this._layoutDirty = false
+        return false
+      }
+
+      const itemNodes = new Map()
+      container.querySelectorAll('.grid-item[data-key]').forEach((el) => {
+        const key = el.dataset.key
+        const card = el.querySelector('.hw-card')
+        if (key && card) itemNodes.set(key, card)
+      })
+
+      const items = this.sortedItems || []
+      const cardElements = items.map((item) => itemNodes.get(item.key))
+      if (!items.length || cardElements.some((el) => !el)) return false
+
+      // 窄屏收窄轨道、缩小列间距，否则 36 条轨道之间的 gap 会超过视口宽度
+      const gap = W < 760 ? 8 : COLUMN_GAP
+      const trackCount = W < 520 ? 12 : W < 760 ? 24 : TRACK_COUNT
+
+      const measurements = await measureCardsAsync(
+        cardElements,
+        W,
+        {
+          T: trackCount,
+          gap,
+          parent: container.parentElement || container,
+        },
+        { shouldCancel: () => token != null && token !== this._layoutToken },
+      )
+      if (!measurements || measurements.some((m) => !m)) return false
+      // 测量期间又来了新输入/新尺寸：这份结果已经过期，直接丢掉
+      if (token != null && token !== this._layoutToken) return false
+
+      const shared = {
+        heights: measurements.map((m) => m.heights),
+        naturalWidths: measurements.map((m) => m.naturalWidth),
+        W,
+        T: trackCount,
+        gap,
+        rowGap: ROW_GAP,
+        maxColumns: 6,
+        beamWidth: 28,
+      }
+
+      // 舒适布局是硬约束：每张卡的实际宽度不得低于它的可读下限
+      // （naturalWidth < 270 时取 naturalWidth，否则取 270）。
+      // 高度只用来决定“少列但更高”是否值得：
+      //   - 有放得进首屏的方案：取列数最少的那个，宁可更高、少折行；
+      //   - 都放不下：取总高度最小的那个，仍然不牺牲可读宽度。
+      const comfortLayouts = await buildMasonryLayoutsAsync(
+        { ...shared, comfortMode: true },
+        { shouldCancel: () => token != null && token !== this._layoutToken },
+      )
+      if (!comfortLayouts || !comfortLayouts.length) return false
+      if (token != null && token !== this._layoutToken) return false
+      const fitting = comfortLayouts
+        .filter((layout) => layout.max <= availableHeight)
+        .sort((a, b) => a.columnCount - b.columnCount || a.max - b.max || a.range - b.range)
+
+      const chosen =
+        fitting[0] ||
+        comfortLayouts
+          .slice()
+          .sort((a, b) => a.max - b.max || a.columnCount - b.columnCount || a.range - b.range)[0]
+      if (!chosen) return false
+      // 测量/求解这段时间内容又变了：这份结果已经过期，别盖掉本地预览，
+      // 交给 updated 里排的那次补算。
+      if (signature !== this.layoutSignature(W, availableHeight)) return false
+
+      const placements = new Map()
+      chosen.placements.forEach((placement) => {
+        const item = items[placement.index]
+        if (item) placements.set(item.key, placement)
+      })
+
+      this._layout = {
+        columns: chosen.columns,
+        placements,
+        max: chosen.max,
+        availableHeight,
+        gap,
+        W,
+      }
+      this._layoutSignature = signature
+      this._layoutDayKey = this.dayKey
+      this.snapshotFastSignatures()
+      this.cacheCurrentLayout()
+      if (request === this._layoutRequest) this._layoutDirty = false
+      this.layoutVersion++
+      return true
     },
 
     // 一张卡片按天分块：一天一块，块里是那天的正文按空行和标题行分的几段。
@@ -577,6 +988,9 @@ export default {
 /* 科目名、小标题、正文三处之间的间距统一取这一个值 */
 .hw-card {
   --hw-gap: 6px;
+  /* 跨列卡上方的洞摊到的额外高度，全部落在卡片底部的内边距里，
+     不塞进卡片之间的间距（间距固定 11px，见 masonry.js ROW_GAP） */
+  padding-bottom: var(--hw-stretch, 0px);
   /* 自己给手型光标，不用 Vuetify 的 .cursor-pointer */
   cursor: pointer;
 }

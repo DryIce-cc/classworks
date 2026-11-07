@@ -73,6 +73,7 @@
         :paused="state.dialogVisible"
         :ready="state.dataReady"
         :instant="state.instantSwitch"
+        :day-key="state.dateString"
         @open-dialog="openDialog"
       />
     </v-container>

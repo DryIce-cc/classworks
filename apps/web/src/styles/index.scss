@@ -6,9 +6,8 @@
   grid-auto-rows: 1px;
   align-items: start;
   column-gap: 8px;
-  // 行间距不交给 row-gap：跨行高度是整数行，row-gap 会在每张卡下面
-  // 再叠 0~10px 的余数，导致卡间距忽大忽小。改成 0，把间距算进 span
-  --grid-row-gap: 10px;
+  // 行间距不交给 row-gap：跨行高度是数行，row-gap 会在每张卡下面
+  // 再叠余数，导致卡间距忽大忽小。改成 0，整11px 由求解器算进 y（masonry.js 的 ROW_GAP）
   row-gap: 0;
   // 一圈留白用 margin 而不是 padding。下边距比上面多一截：原来「添加作业」
   // 那块自己带 mt-4（16px），它的上外边距让给 margin-top:auto 了，间距挪到这儿
