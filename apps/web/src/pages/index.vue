@@ -72,7 +72,6 @@
         :content-style="state.contentStyle"
         :paused="state.dialogVisible"
         :ready="state.dataReady"
-        :instant="state.instantSwitch"
         :day-key="state.dateString"
         @open-dialog="openDialog"
       />
@@ -145,9 +144,6 @@ export default {
         // 首屏数据（当天作业 + 科目表）读完之前，卡片一律不露面：
         // 先露一版空板、数据到了再重排，就是用户看到的那下闪
         dataReady: false,
-        // 换天这一帧先关掉卡片过渡：旧板和新板必须同一帧换完，
-        // 不能让离场卡、入场卡、添加卡各按各的时长错开
-        instantSwitch: false,
         dialogVisible: false,
         // 点开面板的那张卡片在视口里的位置，面板从这儿长出来、也缩回这儿
         dialogOrigin: null,
@@ -650,7 +646,6 @@ export default {
       const selectedDate = this.ensureDate(newDate)
       const dateStr = this.formatDate(selectedDate)
       if (dateStr === this.state.dateString) return
-      this.state.instantSwitch = true
       try {
         // 数据读完之前板上仍是旧的一天；读完后在 commitSnapshot 里一次性换掉。
         // 不先切日期再等数据：那会让旧卡片配着新日期先渲染一版
@@ -661,8 +656,6 @@ export default {
       } catch (error) {
         console.error('日期处理错误:', error)
         this.$message.error('日期处理错误', '请重新选择日期')
-      } finally {
-        this.state.instantSwitch = false
       }
     },
 

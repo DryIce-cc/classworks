@@ -1,25 +1,31 @@
-// 卡片用 CSS Grid 摆：行高 1px，每张卡按实测高度跨行。
-// 所有卡片都在同一个 TransitionGroup 里，换列只是换格子，不会离场再入场。
+// 卡片全部绝对定位：x/y/宽/高由求解器算好，组件直接写进 inline style。
+// 位置和尺寸用同一时长、同一条曲线过渡，上下相邻卡片的 11px 间距在整段动画里不变。
 .grid-masonry {
-  display: grid;
-  grid-auto-flow: dense;
-  grid-auto-rows: 1px;
-  align-items: start;
-  column-gap: 8px;
-  // 行间距不交给 row-gap：跨行高度是数行，row-gap 会在每张卡下面
-  // 再叠余数，导致卡间距忽大忽小。改成 0，整11px 由求解器算进 y（masonry.js 的 ROW_GAP）
-  row-gap: 0;
   // 一圈留白用 margin 而不是 padding。下边距比上面多一截：原来「添加作业」
   // 那块自己带 mt-4（16px），它的上外边距让给 margin-top:auto 了，间距挪到这儿
   margin: 10px 10px 26px;
   padding: 0;
-  // 离场卡片绝对定位后留在本区块原处，得有个定位父级
+  // 离场卡片、绝对定位的卡片都以本区块为定位父级
   position: relative;
+  // 换列动画里卡片可能短暂越过右边界；clip 只裁横向、不生成滚动容器，
+  // 免得拖动时横向滚动条闪现
+  overflow-x: clip;
+  // 高度由布局给出；跟着卡片一起过渡，下面的区块不会先跳到位
+  transition: height var(--motion-slow) var(--ease-standard);
 }
 
 .grid-item {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
   min-width: 0;
+  // 四者同步：卡片长大的同时下面的卡也在让位，间距始终是 11px
+  transition:
+    left var(--motion-slow) var(--ease-standard),
+    top var(--motion-slow) var(--ease-standard),
+    width var(--motion-slow) var(--ease-standard),
+    height var(--motion-slow) var(--ease-standard);
 }
 
 // 按下时轻轻收一下，松手慢慢回来。卡片是整块可点的，点下去到面板长出来

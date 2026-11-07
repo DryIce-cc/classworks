@@ -252,7 +252,7 @@ export function fillSpanHoles(placements, columnCount, rowGap = ROW_GAP) {
 }
 
 function finalize(state, ctx) {
-  const { C, colW, W, gap, rowGap } = ctx
+  const { C, colW, gap, rowGap, W } = ctx
   const columns = []
   let x = 0
   for (let k = 0; k < C; k++) {
@@ -273,9 +273,7 @@ function finalize(state, ctx) {
       index: p.index,
       col: p.col,
       span: p.span,
-      x: columns[p.col].x,
       y: p.y,
-      width: spanWidth(p.span, W, C, gap),
       height: height,
       naturalHeight: height,
       bottom: p.y + height,
@@ -489,7 +487,7 @@ export function measureCards(cardElements, W, options = {}) {
 
   const holder = document.createElement('div')
   holder.style.cssText =
-    'position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;width:0;height:0;overflow:visible;'
+    'position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;width:0;height:0;overflow:hidden;'
   parent.appendChild(holder)
 
   const entries = []
@@ -554,7 +552,7 @@ export async function measureCardsAsync(cardElements, W, options = {}, hooks = {
 
   const holder = document.createElement('div')
   holder.style.cssText =
-    'position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;width:0;height:0;overflow:visible;'
+    'position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;width:0;height:0;overflow:hidden;'
   parent.appendChild(holder)
 
   const entries = []

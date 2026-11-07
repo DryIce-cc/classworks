@@ -13,18 +13,10 @@
 
 // ===== 作业卡片（首页瀑布流）=====
 // 卡片多、字密，动效只回答「刚才那一下发生在哪」：
-// 进入从下方 6px 归位，离开原地淡出，同列换位沿直线滑过去。
-// 不做缩放弹跳。所有卡片在同一个 TransitionGroup 里，换列也走 transform 换位。
-
-.grid-item {
-  transition: transform var(--motion-slow) var(--ease-standard);
-}
-
-// 同列内的位置变化（Vue TransitionGroup 的 FLIP）
-.grid-move {
-  transition: transform var(--motion-slow) var(--ease-standard);
-  z-index: 1;
-}
+// 进入从下方 6px 归位，离开原地淡出。
+// 位置和尺寸不走 TransitionGroup 的 FLIP：left/top/width/height 直接由
+// HomeworkGrid.vue 的 itemStyle 给出，统一过渡（见 styles/index.scss 的 .grid-item）。
+// 位移和尺寸同一时长、同一条曲线，上下相邻卡片的 11px 间距在任何一帧都不变。
 
 .grid-enter-active {
   transition:
