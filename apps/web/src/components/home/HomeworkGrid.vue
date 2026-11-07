@@ -3,7 +3,7 @@
        作业不满一屏时后者就贴在视口底边（见 styles/index.scss 的 .empty-subjects） -->
   <div
     class="grid-body"
-    :class="{ 'grid-body-pending': bodyHidden, 'grid-instant': instant }"
+    :class="{ 'grid-body-pending': bodyHidden, 'grid-instant': instant, 'grid-live': paused }"
   >
     <!-- 作业卡片：CSS Grid 瀑布流，行高 1px，每张按实测高度跨行。
        列数只按窗口宽度分档，不看设备类型。
@@ -126,10 +126,10 @@ import { parseHeadingLine } from '@/utils/homeworkReserve'
 import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
 import { captureElement } from '@/utils/screenshot'
 import {
-  buildMasonryLayoutsAsync,
+  buildMasonryLayout,
+  columnsForWidth,
   fillSpanHoles,
   measureCardsAsync,
-  TRACK_COUNT,
   COLUMN_GAP,
   ROW_GAP,
 } from '@/utils/masonry'
@@ -195,7 +195,6 @@ export default {
     // 只活在当前页面实例里，刷新即清空
     this._layoutCache = new Map()
     this._layoutDayKey = null
-    this._lastViewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight
     // 待执行的自动上滑的定时器
     this._scrollTimer = 0
     // 首屏等动画收尾的 rAF 句柄
@@ -238,7 +237,6 @@ export default {
   },
   mounted() {
     // 首屏量一次（异步测量 + 求解，不阻塞首屏交互）
-    this._lastViewportHeight = window.innerHeight
     this.scheduleLayout(0)
     // 字体后加载会改变卡片高度，加载完再平衡一次
     if (document.fonts && document.fonts.ready) {
@@ -309,23 +307,15 @@ export default {
       this.armIdleScroll()
     },
 
-    // 窗口宽度/高度变化：防抖后重算；滚动只影响自动上滑，不重排
+    // 窗口宽度变化：防抖后重算；滚动只影响自动上滑，不重排
     handleWindowResize() {
-      let changed = false
-      let widthChanged = false
       if (window.innerWidth !== this.layoutWidth) {
         this.layoutWidth = window.innerWidth
-        changed = true
-        widthChanged = true
+        // 宽度先按比例缩放列宽（列数不变）把画面立即贴合新视口，
+        // 再排期完整求解；不然要等测量算完才不再横向溢出。
+        this.applyQuickResize()
+        this.scheduleLayout()
       }
-      if (window.innerHeight !== this._lastViewportHeight) {
-        this._lastViewportHeight = window.innerHeight
-        changed = true
-      }
-      // 宽度先按比例缩放列宽（列数不变）把画面立即贴合新视口，
-      // 再排期完整求解；不然要等测量算完才不再横向溢出。
-      if (widthChanged) this.applyQuickResize()
-      if (changed) this.scheduleLayout()
       this.handleViewportChange()
     },
 
@@ -486,9 +476,9 @@ export default {
       this.layoutReady = true
     },
 
-    // 内容/宽度/可用高度没变就不重算。签名只看会影响高度的输入，
+    // 内容/宽度没变就不重算。签名只看会影响高度的输入，
     // 避免 layoutVersion++ 引起的 updated 再算一遍，形成死循环。
-    layoutSignature(W, availableHeight) {
+    layoutSignature(W) {
       const items = this.sortedItems || []
       const content = items
         .map((item) => {
@@ -503,7 +493,7 @@ export default {
         })
         .join('\u0002')
       const style = this.contentStyle ? JSON.stringify(this.contentStyle) : ''
-      return `${W}|${Math.round(availableHeight)}|${style}|${content}`
+      return `${W}|${style}|${content}`
     },
 
     // 宽度变了先做便宜的近似：列数、每张卡跨几列都不动，列宽按旧宽度占比
@@ -642,8 +632,16 @@ export default {
       const columnCount = layout.columns.length
       const colBottom = new Float64Array(columnCount)
       const list = []
-      items.forEach((item, index) => {
-        const old = layout.placements.get(item.key)
+      // 按求解时的落位顺序重摞，而不是按科目顺序：顺序变了列位就跟着错
+      const itemIndex = new Map(items.map((item, index) => [item.key, index]))
+      const byKey = new Map(items.map((item) => [item.key, item]))
+      const order = Array.isArray(layout.order) && layout.order.length === items.length
+        ? layout.order
+        : items.map((item) => item.key)
+      order.forEach((key) => {
+        const item = byKey.get(key)
+        const old = layout.placements.get(key)
+        if (!item || !old) return
         const naturalHeight = heights.has(item.key)
           ? heights.get(item.key)
           : old.naturalHeight != null
@@ -655,7 +653,7 @@ export default {
         }
         list.push({
           ...old,
-          index,
+          index: itemIndex.get(key),
           y,
           height: naturalHeight,
           naturalHeight,
@@ -728,22 +726,15 @@ export default {
       }
     },
 
-    // 量卡片 → 求“舒适布局”：可读宽度是硬约束，高度只决定列数取舍。
-    // 有放得进首屏的方案时按列数从少到多挑第一个；都放不下时取总高度最小的舒适布局。
+    // 量卡片 → 求分列方案：列数只按内容宽度分档，同档内每列等宽，
+    // 跨列卡按空洞最小、总高度最低落位；不看视口高度。
     async updateLayout(token, request = this._layoutRequest) {
       const container = this.$refs.gridContainer
       if (!container) return false
       const W = Math.round(container.clientWidth)
       if (!W) return false
 
-      const rect = container.getBoundingClientRect()
-      const topInDocument = rect.top + window.scrollY
-      const bottomReserve = this.addableSubjects?.length ? 120 : 0
-      const availableHeight = Math.max(
-        320,
-        window.innerHeight - topInDocument - bottomReserve - 24,
-      )
-      const signature = this.layoutSignature(W, availableHeight)
+      const signature = this.layoutSignature(W)
       if (signature === this._layoutSignature) {
         if (request === this._layoutRequest) this._layoutDirty = false
         return false
@@ -760,15 +751,16 @@ export default {
       const cardElements = items.map((item) => itemNodes.get(item.key))
       if (!items.length || cardElements.some((el) => !el)) return false
 
-      // 窄屏收窄轨道、缩小列间距，否则 36 条轨道之间的 gap 会超过视口宽度
-      const gap = W < 760 ? 8 : COLUMN_GAP
-      const trackCount = W < 520 ? 12 : W < 760 ? 24 : TRACK_COUNT
+      // 列数按视口宽度分档，列宽按容器实际可用宽度均分；
+      // 卡片比列数还少时按卡片数收窄，免得量了用不上的宽度
+      const columns = Math.max(1, Math.min(columnsForWidth(window.innerWidth), items.length))
+      const gap = COLUMN_GAP
 
       const measurements = await measureCardsAsync(
         cardElements,
         W,
         {
-          T: trackCount,
+          columns,
           gap,
           parent: container.parentElement || container,
         },
@@ -778,53 +770,35 @@ export default {
       // 测量期间又来了新输入/新尺寸：这份结果已经过期，直接丢掉
       if (token != null && token !== this._layoutToken) return false
 
-      const shared = {
+      const chosen = buildMasonryLayout({
         heights: measurements.map((m) => m.heights),
         naturalWidths: measurements.map((m) => m.naturalWidth),
         W,
-        T: trackCount,
+        columns,
         gap,
         rowGap: ROW_GAP,
-        maxColumns: 6,
-        beamWidth: 28,
-      }
-
-      // 舒适布局是硬约束：每张卡的实际宽度不得低于它的可读下限
-      // （naturalWidth < 270 时取 naturalWidth，否则取 270）。
-      // 高度只用来决定“少列但更高”是否值得：
-      //   - 有放得进首屏的方案：取列数最少的那个，宁可更高、少折行；
-      //   - 都放不下：取总高度最小的那个，仍然不牺牲可读宽度。
-      const comfortLayouts = await buildMasonryLayoutsAsync(
-        { ...shared, comfortMode: true },
-        { shouldCancel: () => token != null && token !== this._layoutToken },
-      )
-      if (!comfortLayouts || !comfortLayouts.length) return false
-      if (token != null && token !== this._layoutToken) return false
-      const fitting = comfortLayouts
-        .filter((layout) => layout.max <= availableHeight)
-        .sort((a, b) => a.columnCount - b.columnCount || a.max - b.max || a.range - b.range)
-
-      const chosen =
-        fitting[0] ||
-        comfortLayouts
-          .slice()
-          .sort((a, b) => a.max - b.max || a.columnCount - b.columnCount || a.range - b.range)[0]
+      })
       if (!chosen) return false
       // 测量/求解这段时间内容又变了：这份结果已经过期，别盖掉本地预览，
       // 交给 updated 里排的那次补算。
-      if (signature !== this.layoutSignature(W, availableHeight)) return false
+      if (signature !== this.layoutSignature(W)) return false
 
       const placements = new Map()
+      // 求解器主要按科目顺序落位，但兜底的 LPT 候选是按卡高排序的，顺序可能变：
+      // 编辑预览的本地重排必须按这个顺序往下摞，按科目顺序摞会把位置打乱
+      const order = []
       chosen.placements.forEach((placement) => {
         const item = items[placement.index]
-        if (item) placements.set(item.key, placement)
+        if (!item) return
+        placements.set(item.key, placement)
+        order.push(item.key)
       })
 
       this._layout = {
         columns: chosen.columns,
         placements,
+        order,
         max: chosen.max,
-        availableHeight,
         gap,
         W,
       }
@@ -975,13 +949,6 @@ export default {
 
 /* 首屏分列过程中不要放过渡：位置会连续校正，放动画反而留下半截位移 */
 .grid-initial .grid-item {
-  transition: none !important;
-}
-
-/* 换天只切内容，不做过渡：旧卡、新卡、添加卡同一帧到位 */
-.grid-instant .grid-item,
-.grid-instant .grid-item .v-card,
-.grid-instant .empty-subject-card {
   transition: none !important;
 }
 

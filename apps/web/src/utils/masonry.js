@@ -1,64 +1,61 @@
-// 变宽列 + 跨列卡片的分列求解器。
+// 统一列宽 + 跨列卡片的分列求解器。
 //
 // 模型：
-//   - 视口内容宽度 W 均分成 T 个轨道，列 = 连续的若干轨道，列宽由轨道数决定；
-//   - 卡片可以跨 1..C 列，跨 t 个轨道时的高度直接从测量表 H[i][t] 查；
+//   - 列数只按内容宽度分档（见 COLUMN_BREAKPOINTS），同一档内每列等宽；
+//   - 卡片可以跨 1..C 列，跨 s 列时的高度直接从测量表 heights[i][s] 查；
 //   - 跨列卡放在被覆盖列当前最高点 y=max(h[k])，比 y 矮的列上方留洞，
 //     洞按面积计入 waste（保守模型：这些洞之后不再复用）。
 //
-// 搜索：
-//   - 枚举列数 C；
-//   - 用「等高 / 一宽多窄 / 按内容量 / 随机」做种子，单轨道转移爬山；
-//   - 每种列宽用 beam search 逐卡选择「放哪列、跨几列」。
-//
-// 两种模式：
-//   - comfort：每张卡的落位宽度不得小于它的可读下限
-//     （naturalWidth < 270 时取 naturalWidth，否则取 270）；
-//   - compact：允许低于可读下限，但按短少的像素数计罚，优先压总高度。
+// 搜索：卡片按科目顺序逐张放，beam 搜每张卡放进哪一列、跨几列。
+// 不搜索的话，一路往当前最矮的列垒，长卡很容易被挤到最后一列顶成一根柱子。
+// 目标是「最高的那一列尽量矮」；跨列省下的高度再按系数抵扣（长文本跨列好读）。
+// 分数相同时更靠左、更少留洞的排法胜出，也就自然贴近科目顺序。
 
-export const TRACK_COUNT = 36
 export const COLUMN_GAP = 10
 export const ROW_GAP = 11
-export const MIN_COL_WIDTH = 150
-export const COMFORT_COL_WIDTH = 270
 
+// 列数分档：宽度达到 minWidth 就用对应的列数，都不满足就是单列
+export const COLUMN_BREAKPOINTS = [
+  { minWidth: 1440, columns: 4 },
+  { minWidth: 1024, columns: 3 },
+  { minWidth: 600, columns: 2 },
+]
+// 跨列上限：一张卡最多跨 2 列，所以只需量 1 列和 2 列宽度下的高度
+export const MAX_SPAN = 2
+// 跨列门槛：自然宽要达到目标跨列总宽的 80% 才允许跨。
+// 太窄的卡硬跨会变成一条宽扁横条，右侧一片空白，还容易在邻列上方留洞
+export const SPAN_WIDTH_FILL = 0.8
+// 跨列至少要省下这么多高度才值得（占单列高度的比例）：只少折一行也跨，
+// 会多占一列宽度却看不出紧凑，反而浪费横向空间
+const SPAN_MIN_SAVE = 0.06
 const EPS = 1e-9
 const WASTE_WEIGHT = 0.5
-const RANGE_WEIGHT = 0.04
 // 跨列卡最多允许桥接多深的高度差；再深就会在矮列上方留下明显空洞
 const MAX_SPAN_HOLE = 72
 // 跨列卡上方的洞平均摊给该列底部最多这几张卡，避免单张卡被拉得太长
 const MAX_STRETCH_CARDS = 4
+// 每层保留的候选状态数。分支只有「列 × 跨列数」这点，卡数一般不到 10
+const BEAM_WIDTH = 300
+// 跨列资格分（spanGain）的权重：资格分 = 省下的高度 × 自然宽/跨列宽（封顶 2）。
+// 省下的高度是绝对值，自然宽比跨列宽越大说明两列下仍在折行、内容更像长文本，
+// 两者相乘正好把「英语这种又长又窄的卡」和「语文这种刚好填满两列的卡」拉开。
+// 0.5 表示愿意为一张高资格分的卡多付半张卡的高度（3 列下英语跨列只多 33px）。
+const SPAN_GAIN_WEIGHT = 0.5
 
-export function trackUnit(W, gap = COLUMN_GAP, T = TRACK_COUNT) {
-  return (W - (T - 1) * gap) / T
-}
-
-export function widthOfTracks(t, W, gap = COLUMN_GAP, T = TRACK_COUNT) {
-  return t * trackUnit(W, gap, T) + (t - 1) * gap
-}
-
-function tracksForWidth(width, W, gap, T) {
-  let lo = 1
-  let hi = T
-  const target = width - 0.5
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (widthOfTracks(mid, W, gap, T) >= target) hi = mid
-    else lo = mid + 1
+export function columnsForWidth(W) {
+  for (const bp of COLUMN_BREAKPOINTS) {
+    if (W >= bp.minWidth) return bp.columns
   }
-  return lo
+  return 1
 }
 
-function mulberry32(seed) {
-  let a = seed >>> 0
-  return function () {
-    a |= 0
-    a = (a + 0x6d2b79f5) | 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
+export function columnWidth(W, C, gap = COLUMN_GAP) {
+  if (C <= 1) return W
+  return (W - (C - 1) * gap) / C
+}
+
+export function spanWidth(span, W, C, gap = COLUMN_GAP) {
+  return span * columnWidth(W, C, gap) + (span - 1) * gap
 }
 
 // 让出一轮事件循环即可：用 setTimeout(0) 而不是 requestIdleCallback，
@@ -69,242 +66,93 @@ function yieldToIdle() {
   })
 }
 
-function equalTracks(C, T) {
-  const base = Math.floor(T / C)
-  const rem = T % C
-  const arr = new Array(C).fill(base)
-  for (let i = 0; i < rem; i++) arr[i]++
-  return arr
-}
-
-function randomComposition(C, T, minT, rng) {
-  const tracks = new Array(C).fill(minT)
-  let rem = T - C * minT
-  while (rem > 0) {
-    tracks[Math.floor(rng() * C)]++
-    rem--
-  }
-  return tracks
-}
-
-// 按「每张卡最省面积的宽度」估算内容量，再按列轮转分桶。
-function volumeComposition(C, ctx) {
-  const { heights, T, minT, rowGap, W, gap } = ctx
-  const volumes = heights.map(function (H) {
-    let best = Infinity
-    for (let t = minT; t <= T; t++) {
-      const area = (H[t] + rowGap) * widthOfTracks(t, W, gap, T)
-      if (area < best) best = area
-    }
-    return best
-  })
-
-  const buckets = new Array(C).fill(0)
-  for (let i = 0; i < volumes.length; i++) buckets[i % C] += volumes[i]
-  const sum = buckets.reduce(function (a, b) { return a + b }, 0) || 1
-  const rem = T - C * minT
-  const raw = buckets.map(function (v) { return (rem * v) / sum })
-  const tracks = raw.map(function (v) { return minT + Math.floor(v) })
-  let diff = T - tracks.reduce(function (a, b) { return a + b }, 0)
-  const order = raw
-    .map(function (v, k) { return { k: k, frac: v - Math.floor(v) } })
-    .sort(function (a, b) { return b.frac - a.frac })
-  for (let i = 0; i < diff; i++) tracks[order[i % order.length].k]++
-  return tracks
-}
-
-function buildSeeds(C, ctx) {
-  const { T, minT } = ctx
-  const seeds = []
-  const push = function (tracks) {
-    const key = tracks.join(',')
-    if (!seeds.some(function (s) { return s.join(',') === key })) seeds.push(tracks)
-  }
-
-  push(equalTracks(C, T))
-
-  const wideFirst = new Array(C).fill(minT)
-  wideFirst[0] = T - (C - 1) * minT
-  push(wideFirst)
-
-  const wideLast = new Array(C).fill(minT)
-  wideLast[C - 1] = T - (C - 1) * minT
-  push(wideLast)
-
-  if (C >= 3) {
-    const twoWide = new Array(C).fill(minT)
-    const extra = T - C * minT
-    const first = Math.round(extra * 0.65)
-    twoWide[0] += first
-    twoWide[1] += extra - first
-    push(twoWide)
-  }
-
-  push(volumeComposition(C, ctx))
-
-  const rng = mulberry32(9173 + C * 131)
-  for (let r = 0; r < 2; r++) push(randomComposition(C, T, minT, rng))
-  return seeds
-}
-
-function scoreOf(max, min, waste, W, readability) {
-  return max + WASTE_WEIGHT * (waste / W) + RANGE_WEIGHT * (max - min) + readability
-}
-
-function addPlacement(state, i, ctx, tracks, colW, prefixTracks) {
-  const C = tracks.length
-  const heights = state.heights
-  const out = []
+// 把第 i 张卡放进某个（列、跨列数）的候选。父状态用链表串起来，
+// 每一步都复制一遍落位数组太浪费
+function expandState(state, i, ctx, out) {
+  const { C, heights, naturalWidths, spanWidths, colW, rowGap } = ctx
 
   for (let c = 0; c < C; c++) {
-    for (let s = 1; c + s <= C; s++) {
-      const t = prefixTracks[c + s] - prefixTracks[c]
-      // comfort 模式：落位宽度必须达到这张卡的可读下限
-      if (ctx.comfortMode && t < ctx.requiredTracks[i]) continue
-      // 自然宽还没到舒适宽的卡，内容本身撑不满一整列；跨列会变成一条宽扁横条，
-      // 既浪费横向空间，又容易在邻列上方留洞，所以优先单列。
-      if (s > 1 && ctx.naturalWidths[i] < COMFORT_COL_WIDTH) continue
+    // 列只从左往右开：左边还有空列时不在更右的列落卡，
+    // 否则后放的卡会出现在先放的卡上方，读起来就乱序了
+    let closed = false
+    for (let k = 0; k < c; k++) {
+      if (state.heights[k] <= 0) {
+        closed = true
+        break
+      }
+    }
+    if (closed) continue
 
-      const width = ctx.widthByTracks[t]
-      const readability = ctx.comfortMode
-        ? 0
-        : Math.max(0, ctx.targetWidths[i] - width) * ctx.readWeight
+    for (let s = 1; s <= MAX_SPAN && c + s <= C; s++) {
+      // 单列下不折行的短卡不跨：会变成一条宽扁横条，既浪费横向空间，
+      // 又容易在邻列上方留洞；跨了也几乎不省高度，没有意义
+      if (s > 1) {
+        if (naturalWidths[i] < spanWidths[s] * SPAN_WIDTH_FILL) continue
+        if (heights[i][s] > heights[i][1] * (1 - SPAN_MIN_SAVE)) continue
+      }
 
-      const h = ctx.heights[i][t] + ctx.rowGap
       let y = 0
       let minCovered = Infinity
       for (let k = c; k < c + s; k++) {
-        if (heights[k] > y) y = heights[k]
-        if (heights[k] < minCovered) minCovered = heights[k]
+        if (state.heights[k] > y) y = state.heights[k]
+        if (state.heights[k] < minCovered) minCovered = state.heights[k]
       }
       // 跨列只在被覆盖列高度接近时才有意义，否则矮列上方的洞会非常刺眼
       if (s > 1 && y - minCovered > MAX_SPAN_HOLE) continue
 
       let addedWaste = 0
-      for (let k = c; k < c + s; k++) addedWaste += (y - heights[k]) * colW[k]
+      for (let k = c; k < c + s; k++) addedWaste += (y - state.heights[k]) * colW
 
       const next = new Float64Array(C)
       let max = 0
-      let min = Infinity
       for (let k = 0; k < C; k++) {
-        const v = k >= c && k < c + s ? Math.max(heights[k], y + h) : heights[k]
+        const v = k >= c && k < c + s ? y + heights[i][s] + rowGap : state.heights[k]
         next[k] = v
         if (v > max) max = v
-        if (v < min) min = v
       }
 
       const waste = state.waste + addedWaste
-      const readabilityTotal = state.readability + readability
+      // 跨列奖励只取「最高资格分那一张」，不是累加：累加会为了刷奖励
+      // 把多张卡都排成横条，反而更难排紧
+      const gain = s > 1 ? ctx.spanGains[i] : 0
       out.push({
         heights: next,
         waste: waste,
-        readability: readabilityTotal,
         max: max,
-        min: min,
-        range: max - min,
-        score: scoreOf(max, min, waste, ctx.W, readabilityTotal),
-        placements: state.placements.concat([{ index: i, col: c, span: s, y: y, t: t }]),
+        gain: Math.max(state.gain, gain),
+        score:
+          max +
+          (WASTE_WEIGHT * waste) / Math.max(1, ctx.W) -
+          SPAN_GAIN_WEIGHT * Math.max(state.gain, gain),
+        prev: state,
+        card: i,
+        col: c,
+        span: s,
+        y: y,
       })
     }
   }
-  return out
 }
 
 function cmpState(a, b) {
   if (Math.abs(a.score - b.score) > EPS) return a.score - b.score
   if (Math.abs(a.max - b.max) > EPS) return a.max - b.max
-  if (Math.abs(a.range - b.range) > EPS) return a.range - b.range
   return a.waste - b.waste
 }
 
-function dedupeAndSort(states, beamWidth) {
+function dedupeAndSort(states) {
+  // 列高相同就只留分最低的那个。列高按整数取整当键：
+  // 差不到 1px 的状态合并，结果不会有可见差别
   const map = new Map()
   for (const st of states) {
-    const key = Array.from(st.heights).join('|')
+    let key = 'k'
+    for (let k = 0; k < st.heights.length; k++) key += '|' + Math.round(st.heights[k])
     const prev = map.get(key)
     if (!prev || st.score < prev.score - EPS) map.set(key, st)
   }
   const arr = Array.from(map.values())
   arr.sort(cmpState)
-  return arr.slice(0, beamWidth)
-}
-
-function evaluateGreedy(tracks, ctx) {
-  const C = tracks.length
-  const colW = tracks.map(function (t) { return ctx.widthByTracks[t] })
-  const prefixTracks = new Array(C + 1).fill(0)
-  for (let k = 0; k < C; k++) prefixTracks[k + 1] = prefixTracks[k] + tracks[k]
-
-  let heights = new Float64Array(C)
-  let waste = 0
-  let readability = 0
-  const placements = []
-
-  for (let i = 0; i < ctx.heights.length; i++) {
-    const state = { heights: heights, waste: waste, readability: readability, placements: [] }
-    const candidates = addPlacement(state, i, ctx, tracks, colW, prefixTracks)
-    if (!candidates.length) return null
-
-    let best = null
-    for (const cand of candidates) {
-      if (
-        !best ||
-        cand.score < best.score - EPS ||
-        (Math.abs(cand.score - best.score) < EPS &&
-          cand.placements[0].span < best.placements[0].span)
-      ) {
-        best = cand
-      }
-    }
-    heights = best.heights
-    waste = best.waste
-    readability = best.readability
-    placements.push(best.placements[0])
-  }
-
-  const max = Math.max.apply(null, Array.from(heights))
-  const min = Math.min.apply(null, Array.from(heights))
-  return {
-    tracks: tracks,
-    placements: placements,
-    heights: heights,
-    waste: waste,
-    readability: readability,
-    max: max,
-    min: min,
-    range: max - min,
-    score: scoreOf(max, min, waste, ctx.W, readability),
-    spanCount: placements.reduce(function (n, p) { return n + (p.span > 1 ? 1 : 0) }, 0),
-  }
-}
-
-function evaluateBeam(tracks, ctx, beamWidth) {
-  const C = tracks.length
-  const colW = tracks.map(function (t) { return ctx.widthByTracks[t] })
-  const prefixTracks = new Array(C + 1).fill(0)
-  for (let k = 0; k < C; k++) prefixTracks[k + 1] = prefixTracks[k] + tracks[k]
-
-  let states = [{
-    heights: new Float64Array(C),
-    waste: 0,
-    readability: 0,
-    max: 0,
-    min: 0,
-    range: 0,
-    score: 0,
-    placements: [],
-  }]
-
-  for (let i = 0; i < ctx.heights.length; i++) {
-    let next = []
-    for (const state of states) {
-      next = next.concat(addPlacement(state, i, ctx, tracks, colW, prefixTracks))
-    }
-    if (!next.length) return null
-    states = dedupeAndSort(next, beamWidth)
-  }
-
-  return finalize(states[0], tracks, ctx)
+  return arr.slice(0, BEAM_WIDTH)
 }
 
 // 跨列卡落在 y=max(列高)，比 y 矮的列上方会留一条洞。把洞平均摊到该列
@@ -403,313 +251,238 @@ export function fillSpanHoles(placements, columnCount, rowGap = ROW_GAP) {
   })
 }
 
-// 列的左右顺序不影响任何排版指标：把整列（含列宽和列内卡片）一起挪动，
-// 每张卡的宽度、高度、跨列卡覆盖的轨道数、空洞面积都不变。既然如此，
-// 顺序就应当服务于阅读：按「这一列第一张卡的科目序号」从左到右排。
-// 跨列卡把相邻几列绑成一个整体（挪动其中一列会让跨列卡覆盖到别的宽度），
-// 整体内部保持原序，整体之间仍可自由排序。
-function orderColumns(C, placements) {
-  const first = new Array(C).fill(Infinity)
-  const reach = new Int32Array(C)
-  for (let k = 0; k < C; k++) reach[k] = k
-
-  for (const p of placements) {
-    const end = p.col + p.span - 1
-    for (let k = p.col; k <= end; k++) {
-      if (p.index < first[k]) first[k] = p.index
-      if (end > reach[k]) reach[k] = end
-    }
-  }
-
-  const blocks = []
-  let k = 0
-  while (k < C) {
-    let end = reach[k]
-    for (let j = k; j <= end; j++) if (reach[j] > end) end = reach[j]
-    // 读者先看到的是这一块最左列的首卡；跨列卡把几列绑死时，
-    // 块内无法再调，只按这个可见的首卡决定整块放哪。
-    blocks.push({ start: k, end: end, head: first[k] })
-    k = end + 1
-  }
-  blocks.sort(function (a, b) { return a.head - b.head || a.start - b.start })
-
-  const order = []
-  for (const block of blocks) {
-    for (let j = block.start; j <= block.end; j++) order.push(j)
-  }
-  return { order: order, first: first }
-}
-
-// 顺序已经按块归位后，仍然可能因为跨列卡把先后两列绑在一起而留下少量倒置
-// （例：块内左列首卡 5、右列首卡 0）。这个数只用于同分方案的次级比较。
-function headInversions(first) {
-  let n = 0
-  for (let i = 0; i < first.length; i++) {
-    for (let j = i + 1; j < first.length; j++) if (first[i] > first[j]) n++
-  }
-  return n
-}
-
-function finalize(state, tracks, ctx) {
-  const C = tracks.length
-  const ordered = orderColumns(C, state.placements)
-  const displayOf = new Array(C)
-  ordered.order.forEach(function (orig, display) { displayOf[orig] = display })
-
+function finalize(state, ctx) {
+  const { C, colW, W, gap, rowGap } = ctx
   const columns = []
   let x = 0
   for (let k = 0; k < C; k++) {
-    const orig = ordered.order[k]
-    const width = ctx.widthByTracks[tracks[orig]]
-    // 跨列卡会同时抬高被覆盖的每一列，直接用搜索状态里的列高，
-    // 不能只看卡落在的第一列，否则统计出来的 max/range 会偏小。
-    columns.push({ tracks: tracks[orig], width: width, x: x, height: state.heights[orig] })
-    x += width + ctx.gap
+    columns.push({ width: colW, x: x })
+    x += colW + gap
   }
 
-  const placements = fillSpanHoles(
-    state.placements.map(function (p) {
-      const col = displayOf[p.col]
-      const height = ctx.heights[p.index][p.t]
-      const width = ctx.widthByTracks[p.t]
-      return {
-        index: p.index,
-        col: col,
-        span: p.span,
-        x: columns[col].x,
-        y: p.y,
-        width: width,
-        height: height,
-        naturalHeight: height,
-        t: p.t,
-        bottom: p.y + height,
-      }
-    }),
-    C,
-    ctx.rowGap,
-  )
+  // 搜索状态用链表记录落位顺序，这里倒出来
+  const seq = []
+  for (let node = state; node && node.card != null; node = node.prev) {
+    seq.push({ index: node.card, col: node.col, span: node.span, y: node.y })
+  }
+  seq.reverse()
 
-  const max = Math.max.apply(null, Array.from(state.heights))
-  const min = Math.min.apply(null, Array.from(state.heights))
+  const placements = seq.map(function (p) {
+    const height = ctx.heights[p.index][p.span]
+    return {
+      index: p.index,
+      col: p.col,
+      span: p.span,
+      x: columns[p.col].x,
+      y: p.y,
+      width: spanWidth(p.span, W, C, gap),
+      height: height,
+      naturalHeight: height,
+      bottom: p.y + height,
+    }
+  })
 
+  const filled = fillSpanHoles(placements, C, rowGap)
+  const colHeights = new Float64Array(C)
+  for (const p of filled) {
+    for (let k = p.col; k < p.col + p.span; k++) {
+      if (p.bottom > colHeights[k]) colHeights[k] = p.bottom
+    }
+  }
+  for (let k = 0; k < C; k++) columns[k].height = colHeights[k]
+
+  const max = Math.max.apply(null, Array.from(colHeights))
+  const min = Math.min.apply(null, Array.from(colHeights))
+  let gain = 0
+  for (const p of placements) {
+    if (p.span > 1) gain = Math.max(gain, ctx.spanGains ? ctx.spanGains[p.index] || 0 : 0)
+  }
   return {
-    tracks: columns.map(function (col) { return col.tracks }),
     columnCount: C,
     columns: columns,
-    placements: placements,
-    waste: state.waste,
-    readability: state.readability,
+    placements: filled,
+    gap: gap,
+    W: W,
     max: max,
     min: min,
     range: max - min,
-    score: scoreOf(max, min, state.waste, ctx.W, state.readability),
-    headOrder: headInversions(columns.map(function (col, k) {
-      return ordered.first[ordered.order[k]]
-    })),
+    waste: state.waste,
+    gain: gain,
     spanCount: placements.reduce(function (n, p) { return n + (p.span > 1 ? 1 : 0) }, 0),
   }
 }
 
-function compositionCandidates(C, ctx) {
-  const cache = new Map()
-  const evalG = function (tracks) {
-    const key = tracks.join(',')
-    if (cache.has(key)) return cache.get(key)
-    const result = evaluateGreedy(tracks, ctx)
-    cache.set(key, result)
-    return result
-  }
+// 兜底候选：LPT 贪心——高的卡先放，每次都塞进当前最矮的列。
+// 不跨列时分列就是装箱问题，LPT 往往已经是最优或只差一点；beam 只看眼前
+// 最高列，偶尔会漏掉这种「中途先吃点亏、后面更平」的排法，拿它兜底最省事。
+// 允许跨列的卡再额外试一个「跨在当前最低两列顶上」的变体，取更矮的：
+// 跨列卡后面不会再被别的卡挤上去，决策越晚越省纵向空间，矮卡才能补进洞里。
+function greedyChain(ctx, allowSpan) {
+  const { C, heights, rowGap } = ctx
+  const n = heights.length
+  const order = []
+  for (let i = 0; i < n; i++) order.push(i)
+  order.sort(function (a, b) { return heights[b][1] - heights[a][1] || a - b })
 
-  const found = new Map()
-  for (const seed of buildSeeds(C, ctx)) {
-    let current = seed.slice()
-    let currentResult = evalG(current)
-    if (!currentResult) continue
-
-    for (let iter = 0; iter < 8; iter++) {
-      let bestTracks = null
-      let bestResult = currentResult
-
-      for (let a = 0; a < C; a++) {
-        if (current[a] <= ctx.minT) continue
-        for (let b = 0; b < C; b++) {
-          if (a === b) continue
-          const neighbor = current.slice()
-          neighbor[a]--
-          neighbor[b]++
-          const result = evalG(neighbor)
-          if (result && result.score < bestResult.score - EPS) {
-            bestResult = result
-            bestTracks = neighbor
-          }
+  const colHeights = new Float64Array(C)
+  let prev = null
+  for (const i of order) {
+    let c = 0
+    for (let k = 1; k < C; k++) if (colHeights[k] < colHeights[c]) c = k
+    let span = 1
+    let y = colHeights[c]
+    let bottom = y + heights[i][1] + rowGap
+    if (allowSpan && allowSpan[i] && C >= 2) {
+      // 只在相邻两列的中间点试：c 是最矮列，覆盖 c 和 c-1 / c+1
+      for (const c0 of [Math.max(0, c - 1), Math.min(C - 2, c)]) {
+        const y2 = Math.max(colHeights[c0], colHeights[c0 + 1])
+        const bottom2 = y2 + heights[i][2] + rowGap
+        if (bottom2 < bottom - EPS) {
+          span = 2
+          y = y2
+          bottom = bottom2
+          c = c0
         }
       }
-
-      if (!bestTracks) break
-      current = bestTracks
-      currentResult = bestResult
     }
-
-    found.set(current.join(','), { tracks: current, score: currentResult.score })
+    for (let k = c; k < c + span; k++) colHeights[k] = bottom
+    prev = { prev: prev, card: i, col: c, span: span, y: y }
   }
-
-  const result = Array.from(found.values())
-    .sort(function (a, b) { return a.score - b.score })
-    .slice(0, 3)
-    .map(function (item) { return item.tracks })
-
-  const equal = equalTracks(C, ctx.T)
-  const equalKey = equal.join(',')
-  if (!result.some(function (tracks) { return tracks.join(',') === equalKey })) {
-    result.push(equal)
-  }
-  return result
+  return prev
 }
 
-function cmpResult(a, b) {
-  if (Math.abs(a.score - b.score) > EPS) return a.score - b.score
-  if (Math.abs(a.max - b.max) > EPS) return a.max - b.max
-  if (Math.abs(a.range - b.range) > EPS) return a.range - b.range
-  if (Math.abs(a.waste - b.waste) > EPS) return a.waste - b.waste
-  if ((a.headOrder || 0) !== (b.headOrder || 0)) return (a.headOrder || 0) - (b.headOrder || 0)
-  if ((a.spanCount || 0) !== (b.spanCount || 0)) return (a.spanCount || 0) - (b.spanCount || 0)
-  return a.columnCount - b.columnCount
-}
 
-// 一个「多列」方案必须真的有卡片并排：合法布局里同一列的卡只会上下摞，
-// 所以只要有两张卡的纵向区间重叠，它们就一定是并排的。一个都找不到，说明
-// 整版只是单列竖排（典型：每张卡都跨满全部列）。这种方案要丢掉，否则它会
-// 和真正的单列方案同高同分，再被「列数多」的排序规则挑中。
-function hasSideBySide(placements) {
-  for (let i = 0; i < placements.length; i++) {
-    const a = placements[i]
-    for (let j = i + 1; j < placements.length; j++) {
-      const b = placements[j]
-      if (a.y < b.y + b.height && b.y < a.y + a.height) return true
-    }
-  }
-  return false
-}
-
-function dropFakeColumns(layouts) {
-  const real = layouts.filter(function (layout) {
-    return layout.columnCount <= 1 || hasSideBySide(layout.placements)
-  })
-  return real.length ? real : layouts
-}
-
-function makeSolverContext(options) {
+// heights: [{ heights: Float64Array(C+1), naturalWidth: number }]，与卡片顺序一致；
+// naturalWidths: 每张卡的自然宽（用于判断能不能跨列）。
+export function buildMasonryLayout(options) {
   const {
     heights,
     naturalWidths,
     W,
-    T = TRACK_COUNT,
+    columns,
     gap = COLUMN_GAP,
     rowGap = ROW_GAP,
-    maxColumns = 6,
-    comfortMode = false,
-    readWeight = 0.12,
-    beamWidth = 28,
   } = options
 
   if (!W || !heights.length) return null
 
-  const unit = trackUnit(W, gap, T)
-  const minT = Math.max(2, Math.ceil((MIN_COL_WIDTH + gap) / (unit + gap)))
-  const widthByTracks = new Float64Array(T + 1)
-  for (let t = 1; t <= T; t++) widthByTracks[t] = widthOfTracks(t, W, gap, T)
+  const C = Math.max(1, Math.min(columns || columnsForWidth(W), heights.length))
+  const colW = columnWidth(W, C, gap)
+  const spanWidths = new Float64Array(C + 1)
+  for (let s = 1; s <= C; s++) spanWidths[s] = spanWidth(s, W, C, gap)
 
-  const targetWidths = naturalWidths.map(function (n) {
-    return Math.max(MIN_COL_WIDTH, Math.min(COMFORT_COL_WIDTH, n, W))
-  })
-  const requiredTracks = targetWidths.map(function (w) {
-    return tracksForWidth(w, W, gap, T)
-  })
-
-  const maxByWidth = Math.max(1, Math.floor((W + gap) / (MIN_COL_WIDTH + gap)))
-  const columnLimit = Math.max(
-    1,
-    Math.min(maxColumns, Math.floor(T / minT), maxByWidth, heights.length),
-  )
-
-  return {
-    ctx: {
-      heights,
-      W,
-      T,
-      gap,
-      rowGap,
-      unit,
-      minT,
-      widthByTracks,
-      naturalWidths,
-      targetWidths,
-      requiredTracks,
-      comfortMode,
-      readWeight,
-    },
-    columnLimit,
-    beamWidth,
-  }
-}
-
-function bestForColumn(C, ctx, beamWidth) {
-  const compositions = compositionCandidates(C, ctx)
-  let bestC = null
-  for (const tracks of compositions) {
-    const result = evaluateBeam(tracks, ctx, beamWidth)
-    if (result && (!bestC || cmpResult(result, bestC) < 0)) bestC = result
-  }
-  return bestC
-}
-
-export function buildMasonryLayouts(options) {
-  const made = makeSolverContext(options)
-  if (!made) return null
-  const { ctx, columnLimit, beamWidth } = made
-
-  const bestByColumnCount = []
-  for (let C = 1; C <= columnLimit; C++) {
-    const bestC = bestForColumn(C, ctx, beamWidth)
-    if (bestC) bestByColumnCount.push(bestC)
+  const ctx = {
+    heights: heights,
+    naturalWidths: naturalWidths || heights.map(function () { return W }),
+    C: C,
+    W: W,
+    gap: gap,
+    rowGap: rowGap,
+    colW: colW,
+    spanWidths: spanWidths,
   }
 
-  // 列数从少到多：调用方在“高度充裕”时优先取列数少的方案。
-  return dropFakeColumns(bestByColumnCount).sort(function (a, b) {
-    return a.columnCount - b.columnCount
-  })
-}
+  const n = heights.length
+  // 跨列资格分：省下的高度 × 自然宽/两列宽（封顶 2）。
+  // 英语这种自然宽远超两列宽的卡，单列下折行最多、省得也最多，分数最高；
+  // 语文这种自然宽刚好等于两列宽的卡系数只有 1，分数明显低一档
+  const spanGains = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    if (heights[i][2] >= heights[i][1]) continue
+    const overflow = Math.min(2, Math.max(1, naturalWidths[i] / spanWidths[2]))
+    spanGains[i] = (heights[i][1] - heights[i][2]) * overflow
+  }
+  ctx.spanGains = spanGains
+  const allowSpan = new Array(n)
+  for (let i = 0; i < n; i++) {
+    allowSpan[i] =
+      spanGains[i] > 0 &&
+      heights[i][2] <= heights[i][1] * (1 - SPAN_MIN_SAVE) &&
+      naturalWidths[i] >= spanWidths[2] * SPAN_WIDTH_FILL
+  }
+  let states = [{
+    heights: new Float64Array(C),
+    waste: 0,
+    max: 0,
+    gain: 0,
+    score: 0,
+    prev: null,
+    card: null,
+    col: 0,
+    span: 1,
+    y: 0,
+  }]
 
-// 每算完一个列数就让出主线程；调用方用 shouldCancel 丢弃已经过期的结果。
-export async function buildMasonryLayoutsAsync(options, hooks = {}) {
-  const made = makeSolverContext(options)
-  if (!made) return null
-  const { ctx, columnLimit, beamWidth } = made
-
-  const bestByColumnCount = []
-  for (let C = 1; C <= columnLimit; C++) {
-    if (hooks.shouldCancel && hooks.shouldCancel()) return null
-    const bestC = bestForColumn(C, ctx, beamWidth)
-    if (bestC) bestByColumnCount.push(bestC)
-    await yieldToIdle()
-    if (hooks.shouldCancel && hooks.shouldCancel()) return null
+  for (let i = 0; i < n; i++) {
+    const next = []
+    for (const state of states) expandState(state, i, ctx, next)
+    if (!next.length) return null
+    states = dedupeAndSort(next)
   }
 
-  return dropFakeColumns(bestByColumnCount).sort(function (a, b) {
-    return a.columnCount - b.columnCount
-  })
+  // 验收：先看「总高 - 跨列资格分 × 权重」，同分再比列高差。
+  // 资格分高的卡（英语）值得为它多付半张卡的高度，刚好填满两列的卡（语文）不值
+  function rank(layout) {
+    return [
+      Math.round(layout.max - SPAN_GAIN_WEIGHT * layout.gain),
+      layout.range > MAX_SPAN_HOLE ? 1 : 0,
+      layout.range,
+    ]
+  }
+  function better(x, y) {
+    const a = rank(x)
+    const b = rank(y)
+    for (let j = 0; j < a.length; j++) {
+      if (Math.abs(a[j] - b[j]) > EPS) return a[j] < b[j]
+    }
+    return false
+  }
+  let best = null
+  for (const st of states) {
+    const lay = finalize(st, ctx)
+    if (!best || better(lay, best)) best = lay
+  }
+  const greedy = finalize(greedyChain(ctx, allowSpan), ctx)
+  if (better(greedy, best)) best = greedy
+  for (let k = 0; k < n; k++) {
+    if (!allowSpan[k]) continue
+    const lay = finalize(spanLateChain(ctx, k), ctx)
+    if (better(lay, best)) best = lay
+  }
+  return best
 }
 
-export function buildMasonryLayout(options) {
-  const all = buildMasonryLayouts(options)
-  if (!all || !all.length) return null
-  return all.slice().sort(cmpResult)[0]
+// allowSpan[k] 为真时就排在最后（越晚跨，越不容易在矮列上方留洞）
+function spanLateChain(ctx, k) {
+  const { C, heights, rowGap } = ctx
+  const n = heights.length
+  const order = []
+  for (let i = 0; i < n; i++) if (i !== k) order.push(i)
+  order.sort(function (a, b) { return heights[b][1] - heights[a][1] || a - b })
+  order.push(k)
+
+  const colHeights = new Float64Array(C)
+  let prev = null
+  for (const i of order) {
+    const span = i === k ? Math.min(MAX_SPAN, C) : 1
+    let c = 0
+    for (let j = 1; j + span <= C; j++) {
+      if (Math.max(colHeights[j], colHeights[j + span - 1]) < Math.max(colHeights[c], colHeights[c + span - 1])) c = j
+    }
+    let y = 0
+    for (let j = c; j < c + span; j++) if (colHeights[j] > y) y = colHeights[j]
+    const bottom = y + heights[i][span] + rowGap
+    for (let j = c; j < c + span; j++) colHeights[j] = bottom
+    prev = { prev: prev, card: i, col: c, span: span, y: y }
+  }
+  return prev
 }
 
-// 在隐藏容器里量每张卡：自然行宽（不折行需要多宽）+ 每个轨道宽度下的高度。
+// 在隐藏容器里量每张卡：自然行宽（不折行需要多宽）+ 每个跨列数下的高度。
 // cardElements 必须与 heights 的顺序一致。
 export function measureCards(cardElements, W, options = {}) {
-  const T = options.T || TRACK_COUNT
+  const C = options.columns || columnsForWidth(W)
+  const maxSpan = Math.min(C, MAX_SPAN)
   const gap = options.gap ?? COLUMN_GAP
   const parent = options.parent || document.body
   if (!parent) return null
@@ -722,7 +495,6 @@ export function measureCards(cardElements, W, options = {}) {
   const entries = []
   try {
     // 先把所有克隆都挂上、统一设成 max-content，再一次性读自然宽。
-    // 宽度-主序测量（先写所有卡、再读所有卡）把强制重排从 N×T 次压到 T 次。
     for (const card of cardElements) {
       if (!card) {
         entries.push(null)
@@ -739,7 +511,7 @@ export function measureCards(cardElements, W, options = {}) {
         node.style.whiteSpace = 'pre'
       })
       holder.appendChild(clone)
-      entries.push({ clone: clone, nowrapNodes: nowrapNodes, heights: new Float64Array(T + 1) })
+      entries.push({ clone: clone, nowrapNodes: nowrapNodes, heights: new Float64Array(maxSpan + 1) })
     }
 
     // 同一帧里所有 clone 都是 max-content：一次布局就能量完全部自然宽
@@ -751,14 +523,14 @@ export function measureCards(cardElements, W, options = {}) {
       for (const [node, original] of entry.nowrapNodes) node.style.whiteSpace = original
     }
 
-    for (let t = 1; t <= T; t++) {
-      const width = widthOfTracks(t, W, gap, T) + 'px'
+    for (let s = 1; s <= maxSpan; s++) {
+      const width = spanWidth(s, W, C, gap) + 'px'
       for (const entry of entries) {
         if (entry) entry.clone.style.width = width
       }
-      // 第一次 offsetHeight 触发一次布局，同一 t 下其余读数不再触发布局
+      // 第一次 offsetHeight 触发一次布局，同一 s 下其余读数不再触发布局
       for (const entry of entries) {
-        if (entry) entry.heights[t] = entry.clone.offsetHeight
+        if (entry) entry.heights[s] = entry.clone.offsetHeight
       }
     }
 
@@ -771,13 +543,13 @@ export function measureCards(cardElements, W, options = {}) {
   }
 }
 
-// measureCards 的异步版：每量 batchSize 个轨道宽度就让出一次主线程。
+// measureCards 的异步版：每量一个跨列宽度就让出一次主线程。
 // 编辑时它会慢一点，但不会占着输入/预览的主线程；调用方用 shouldCancel 丢弃过期结果。
 export async function measureCardsAsync(cardElements, W, options = {}, hooks = {}) {
-  const T = options.T || TRACK_COUNT
+  const C = options.columns || columnsForWidth(W)
+  const maxSpan = Math.min(C, MAX_SPAN)
   const gap = options.gap ?? COLUMN_GAP
   const parent = options.parent || document.body
-  const batchSize = options.batchSize || 6
   if (!parent) return null
 
   const holder = document.createElement('div')
@@ -805,7 +577,7 @@ export async function measureCardsAsync(cardElements, W, options = {}, hooks = {
         node.style.whiteSpace = 'pre'
       })
       holder.appendChild(clone)
-      entries.push({ clone: clone, nowrapNodes: nowrapNodes, heights: new Float64Array(T + 1) })
+      entries.push({ clone: clone, nowrapNodes: nowrapNodes, heights: new Float64Array(maxSpan + 1) })
     }
 
     for (const entry of entries) {
@@ -819,15 +591,15 @@ export async function measureCardsAsync(cardElements, W, options = {}, hooks = {
     await yieldToIdle()
     if (hooks.shouldCancel && hooks.shouldCancel()) return null
 
-    for (let t = 1; t <= T; t++) {
-      const width = widthOfTracks(t, W, gap, T) + 'px'
+    for (let s = 1; s <= maxSpan; s++) {
+      const width = spanWidth(s, W, C, gap) + 'px'
       for (const entry of entries) {
         if (entry) entry.clone.style.width = width
       }
       for (const entry of entries) {
-        if (entry) entry.heights[t] = entry.clone.offsetHeight
+        if (entry) entry.heights[s] = entry.clone.offsetHeight
       }
-      if (t % batchSize === 0 && t < T) {
+      if (s < maxSpan) {
         await yieldToIdle()
         if (hooks.shouldCancel && hooks.shouldCancel()) return null
       }

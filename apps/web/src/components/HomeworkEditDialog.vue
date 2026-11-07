@@ -158,7 +158,7 @@
          绝对定位挂在对话框内容容器上（那个容器 position: absolute），
          top:100% 正好落在卡片下面；pointer-events:none 让它不挡点击 -->
     <div class="dialog-slogan">
-      <span>点击空白处完成编辑</span>
+      <span>点击任意位置完成编辑</span>
       <span class="dialog-slogan-keys">Esc / Ctrl+S </span>
     </div>
   </v-dialog>
@@ -1715,10 +1715,9 @@ export default {
 
 .dialog-slogan-keys {
   padding-left: 0.75rem;
-  border-left: 1px solid rgba(255, 255, 255, 0.16);
-
+  border-left: 1px solid rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.06em;
   font-size: 0.7rem;
-  color: rgba(255, 255, 255, 0.32);
 }
 
 /* 对话框比屏幕高的时候，卡片自己要滚（Vuetify 给卡片加的 overflow-y: auto）。
