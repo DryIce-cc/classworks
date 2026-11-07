@@ -12,7 +12,13 @@
     scroll-strategy="none"
     persistent
   >
-    <v-card class="hw-card" border @mousedown="holdFocus" @contextmenu="blockMenu">
+    <v-card
+      class="hw-card"
+      :class="{ 'hw-card-closing': closeWarn }"
+      border
+      @mousedown="holdFocus"
+      @contextmenu="blockMenu"
+    >
       <!-- 顶部倒计条：停手一会儿就自动关掉，防的是误触打开。
            卡片顶上的一条细线，面板开着就一直挂着；倒计还剩超过 COUNTDOWN_BAR_DELAY 时
            满格不动，剩不到时才从满格往下走，走完正好赶上关闭。中途一动立刻收回满格。
@@ -263,6 +269,9 @@ const IDLE_CLOSE_RESET_DELAY = 20000
 // 挂出来就是满格，往下走完正好赶上关闭，中途一动就收回去重新算。
 // 和 IDLE_CLOSE_DELAY 同值，所以刚打开就摆着；动过之后的那 20s 只在最后 10s 摆
 const COUNTDOWN_BAR_DELAY = 10000
+// 自动关闭前的最后这么一段时间，整块面板淡下去：还剩 3s 才提醒，
+// 早了会显得一直在闪，晚了来不及反应
+const CLOSE_WARN_DELAY = 3000
 // 倒计定时器醒来的间隔。够密，条出现那一刻的误差看不出来；够疏，白跑的轮询少
 const COUNTDOWN_TICK = 200
 // 正文末尾至少留几个空行，方便接着写下一条
@@ -327,10 +336,19 @@ export default {
       type: Array,
       default: () => [],
     },
+    // 点开面板的那张卡片在视口里的位置 { x, y, width, height }。
+    // 面板从这儿长出来、关的时候缩回这儿；没有（键盘开的）就走居中缩放
+    origin: {
+      type: Object,
+      default: null,
+    },
   },
   emits: ['update:modelValue', 'save', 'preview'],
   data() {
     return {
+      // 关面板那一刻现量的卡片位置。卡片可能已经随瀑布流挪过位，
+      // 比打开时记下的那份准
+      closeFrom: null,
       // 日期 -> 正文。翻到别的日期再翻回来时，这一天的改动还在，
       // 关闭时一次性把所有改动过的日期写回去
       drafts: {},
@@ -364,6 +382,8 @@ export default {
       // 条是否在往下走：倒计剩不到 COUNTDOWN_BAR_DELAY 才是。从满格起走，
       // 走完这一轮正好赶上关闭，中途一动立刻收回满格
       countdownBarDraining: false,
+      // 倒计进入最后 3s：面板淡下去提醒。一有动作立刻回实
+      closeWarn: false,
       // 这一轮从满格走到空要多久：起走那一刻到关闭还剩多少，动画时长跟它对齐
       countdownBarDuration: 0
     }
@@ -428,6 +448,11 @@ export default {
     this.stopHoldRepeat()
   },
   computed: {
+    // 面板该从哪儿长出来：关的时候现量的优先，其次是点开时记下的那张卡片。
+    // 换算成 translate 与 scale 交给 transitions.scss 里的 dialog-transition 覆盖
+    dialogFrom() {
+      return this.closeFrom || this.computeFromRect(this.origin)
+    },
     // 对话框的原始宽度。缩放不再改它——改宽度只是横向压扁：正文重新折行、
     // 卡片反而更高；右边那列键位是 fixed 的，不跟着缩，挤进窄卡片里就跟推荐面板叠上了。
     // 缩放现在交给下面那条 zoom 整体缩，这里只把基准宽度交给 v-dialog
@@ -440,7 +465,13 @@ export default {
     // 用 zoom 缩下去以后，围着内容的那圈空白是真的在对话框盒子外面，
     // 点它是一个正常的「点外面」，面板照常关掉（见 handlePressEnd）
     dialogZoomStyle() {
-      return { zoom: `${this.editorZoom}%` }
+      const from = this.dialogFrom
+      return {
+        zoom: `${this.editorZoom}%`,
+        '--dialog-from-x': `${from ? from.x : 0}px`,
+        '--dialog-from-y': `${from ? from.y : 0}px`,
+        '--dialog-from-scale': from ? from.scale : 0.9,
+      }
     },
     // 对话框能占的最大宽度。要按实际缩放折算，不能直接写视口能让出的那份：
     // max-width 是在「排版尺寸」这一层卡的（内容永远按 700 排、之后才被 zoom 整体缩），
@@ -620,6 +651,9 @@ export default {
     },
     async modelValue(newValue) {
       if (newValue) {
+        // 新开一次，上一回关面板时量的位置作废
+        this.closeFrom = null
+        this._closing = false
         this.drafts = {}
         this.initialDrafts = {}
         // 上一次编辑读过的存档作废：这段时间里存档可能已经被写过了
@@ -634,6 +668,32 @@ export default {
     },
   },
   methods: {
+    // 卡片矩形 -> 过渡用的位移与缩放。位移按「卡片中心 - 视口中心」算：
+    // 面板是 flex 居中的，中心就在视口中心，translate 过去正好落在卡片上。
+    // 元素带 zoom，translate 会被 zoom 一起缩，所以要除回去
+    computeFromRect(rect) {
+      if (!rect) return null
+      const zoom = this.editorZoom / 100
+      const width = Math.min(DIALOG_BASE_WIDTH * zoom, window.innerWidth - 48)
+      if (!width || !rect.width) return null
+      return {
+        x: (rect.x + rect.width / 2 - window.innerWidth / 2) / zoom,
+        y: (rect.y + rect.height / 2 - window.innerHeight / 2) / zoom,
+        // 起手是卡片那么大，长到面板大小；太小的卡片别缩成一个点。
+        // 缩放只作用在面板底色上，里面的字另有节奏（见 transitions.scss）
+        scale: Math.min(0.92, Math.max(0.2, rect.width / width)),
+      }
+    },
+    // 关面板时卡片可能已经被瀑布流挪走、或者从「添加」卡变成了正式卡片，
+    // 按 key 现找一次
+    findCardRect(key) {
+      if (!key) return null
+      const cards = document.querySelectorAll('.grid-item[data-key], .empty-subject-card[data-key]')
+      for (const card of cards) {
+        if (card.dataset.key === key) return card.getBoundingClientRect()
+      }
+      return null
+    },
     // 顶部倒计条：停手一会儿就自动关掉，防的是误触打开。
     // 打开那一刻起先按 IDLE_CLOSE_DELAY 算，读存档的耗时也算在这段里；
     // 动过一次之后改按 IDLE_CLOSE_RESET_DELAY 算，之后每动一次都重新起算——
@@ -645,6 +705,8 @@ export default {
     // 轮询醒来时自己算还剩多少，到点了关，剩下不到一段就把条挂出来。
     startCloseCountdown(delay = IDLE_CLOSE_DELAY) {
       this.stopCloseCountdown()
+      // 新的一轮从实心开始，上一次残留的淡化不带过来
+      this.closeWarn = false
       this._closeDeadline = performance.now() + delay
       this.countdownActive = true
       this._closeTimer = window.setInterval(this.tickCloseCountdown, COUNTDOWN_TICK)
@@ -657,6 +719,7 @@ export default {
       this._closeDeadline = 0
       this.countdownActive = false
       this.countdownBarDraining = false
+      // closeWarn 不在这里清：关闭时面板正淡着走，清掉会先亮回来再缩
     },
 
     // 轮询醒来：到点了关面板；剩下不到 COUNTDOWN_BAR_DELAY 才让条往下走。
@@ -676,6 +739,9 @@ export default {
         this.countdownBarDraining = drain
         if (drain) this.countdownBarDuration = left
       }
+      // 最后 3s 才淡下去，之前一直是实心的
+      const warn = left <= CLOSE_WARN_DELAY
+      if (warn !== this.closeWarn) this.closeWarn = warn
     },
 
     // 有人动了：截止时刻推到 IDLE_CLOSE_RESET_DELAY 之后，条收回满格。
@@ -685,6 +751,7 @@ export default {
       if (!this._closeTimer) return
       this._closeDeadline = performance.now() + IDLE_CLOSE_RESET_DELAY
       this.countdownBarDraining = false
+      this.closeWarn = false
     },
 
     // 页面看不见时（切了标签页、窗口最小化或被完全遮住）不计表：
@@ -901,16 +968,25 @@ export default {
     // 完成编辑这一刻顺便把正文里的「预定」标记落实掉：标记行以下的内容
     // 搬到那一天去，标记行本身不留，被搬进去的那几天也要一并交回去写盘
     async handleClose() {
-      // 面板要关了，先把还在跑的连删停掉：按钮马上就没了，
-      // 停不下来会一路删到面板关完为止
-      this.stopHoldRepeat()
-      // 先落实预定。它把搬走的内容直接写进目标日的草稿，所以下面
-      // changedDrafts 一次就把当天和所有目标日都算上了，不用再单独合并一遍。
-      // 顺序反了的话 changedDrafts 拿到的还是没搬过的正文，标记行会被存回去
-      await this.settleReservations()
-      const entries = this.changedDrafts()
-      if (entries.length) this.$emit('save', entries)
-      this.dialogVisible = false
+      // 只关一次：连点、或者倒计到点和手点撞在一起时，别把 save 发两遍
+      if (this._closing) return
+      this._closing = true
+      try {
+        // 关的时候现量一次卡片位置，缩回去的落点是它此刻待的地方
+        this.closeFrom = this.computeFromRect(this.findCardRect(this.title))
+        // 面板要关了，先把还在跑的连删停掉：按钮马上就没了，
+        // 停不下来会一路删到面板关完为止
+        this.stopHoldRepeat()
+        // 先落实预定。它把搬走的内容直接写进目标日的草稿，所以下面
+        // changedDrafts 一次就把当天和所有目标日都算上了，不用再单独合并一遍。
+        // 顺序反了的话 changedDrafts 拿到的还是没搬过的正文，标记行会被存回去
+        await this.settleReservations()
+        const entries = this.changedDrafts()
+        if (entries.length) this.$emit('save', entries)
+        this.dialogVisible = false
+      } finally {
+        this._closing = false
+      }
     },
     // 把手工写的预定标记落实到各个日期上，返回被搬进去的日期和它们的新正文。
     // 只在完成编辑和翻日期这一刻跑：展示和预览都另有自己的一份解析（buildPreviewPayload），
@@ -1745,6 +1821,15 @@ export default {
      （见 .numeric-keypad 的底色），两处取同一个值，改一处另一处跟着走 */
   --keypad-space: 172px;
   scrollbar-width: none;
+  /* 提醒淡出之后回实用这条：比淡下去快，用户一动立刻看清 */
+  transition: opacity var(--motion-base) var(--ease-standard);
+}
+
+/* 自动关闭前的最后 3 秒：整块面板淡下去。只降不透明度、不动位置，
+   是「要收起来了」的提醒；用户一动就回实，回得比淡下去快，不拖 */
+.hw-card-closing {
+  opacity: 0.5;
+  transition: opacity 700ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .hw-card::-webkit-scrollbar {

@@ -1,53 +1,68 @@
-// Material Design 3 动画曲线
-$emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
-$emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
-$standard-easing: cubic-bezier(0.2, 0, 0, 1);
-$standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
+// ===== 全站动效基准 =====
+// 时长只留三档：fast 给离场和按下，base 给淡入淡出，slow 给位置移动。
+// 曲线也只留三套：标准用于位移，减速用于进入，加速用于离开。
+// 组件里不再写新的毫秒数，要调就调这里。
+:root {
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 280ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+}
 
-// 卡片容器基础过渡（分列重排时跟着动）。
-// 只留淡入淡出：卡片换列时整张挪了位置，再叠一个位移就成了跳来跳去
+// ===== 作业卡片（首页瀑布流）=====
+// 卡片多、字密，动效只回答「刚才那一下发生在哪」：
+// 进入从下方 6px 归位，离开原地淡出，同列换位沿直线滑过去。
+// 不做缩放弹跳。所有卡片在同一个 TransitionGroup 里，换列也走 transform 换位。
+
 .grid-item {
-  transition: opacity 200ms $standard-easing;
+  transition: transform var(--motion-slow) var(--ease-standard);
 }
 
-// 作业卡片挂载/卸载（TransitionGroup name="grid"）：只做淡入淡出，不掺位移
-.grid-enter-active,
+// 同列内的位置变化（Vue TransitionGroup 的 FLIP）
+.grid-move {
+  transition: transform var(--motion-slow) var(--ease-standard);
+  z-index: 1;
+}
+
+.grid-enter-active {
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-decelerate);
+}
+
+.grid-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+// 离场前由 holdLeavingBox 钉住位置和尺寸，这里只管原地淡出
 .grid-leave-active {
-  transition: opacity 200ms $standard-easing;
+  position: absolute;
+  transition: opacity var(--motion-fast) var(--ease-accelerate);
+  pointer-events: none;
 }
 
-.grid-enter-from,
 .grid-leave-to {
   opacity: 0;
 }
 
-// 离场的卡片不占位。它这时候已经在新列里淡入了（新列下面的卡片先跳下去），
-// 等过渡走完才从旧列消失（旧列下面的卡片又跳起来）——一次重排被拆成两下跳。
-// 绝对定位后两张卡片同一帧就位，只剩一下
-.grid-leave-active {
+// 刚加进来、还没量到高度的卡片先不露，位置算好之后再淡进来
+.grid-item-unplaced {
+  opacity: 0;
+}
+
+// ===== 「添加作业」卡片 / 设置页科目卡 =====
+// 与作业卡片同一套口径：进入淡入、离开原地淡出、换位时平滑让开。
+.v-list-enter-active.v-card {
+  transition: opacity var(--motion-base) var(--ease-standard);
+}
+
+.v-list-leave-active.v-card {
   position: absolute;
-}
-
-// 同列里因为上面的卡片增删而让位的那些，平滑挪过去，别硬切
-.grid-move {
-  transition: transform 200ms $standard-easing;
-}
-
-// 首屏那一版分列是按序号摆的（那时卡片高度还没量到），摆出来必然是错的。
-// 量完再淡入，好歹一次到位，不用先看个错的再跳
-.grid-masonry {
-  transition: opacity 200ms $standard-easing;
-}
-
-.grid-pending {
-  opacity: 0;
-}
-
-// 列数变化时不能淡出：淡出的这 200ms 里旧高度已经按新列数摆过一版，
-// 等看清了才换成真实分列就是一次闪跳。这里直接藏住，量完再淡入
-.grid-pending-instant {
-  opacity: 0;
-  transition: none;
+  transition: opacity var(--motion-fast) var(--ease-accelerate);
+  pointer-events: none;
 }
 
 .v-list-enter-from.v-card,
@@ -55,47 +70,73 @@ $standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
   opacity: 0;
 }
 
-// 离场的卡片不占位。它淡出这 200ms 里格子还留着的话，同排卡片先被挤一下，
-// 等它走完才瞬移补上——「缺位」和「瞬移重排」都是这一个原因。
-// 脱离文档流后尺寸和静态位置都会变，由组件在离场前把当前的位置尺寸钉死
-.v-list-leave-active.v-card {
-  position: absolute;
+.v-list-move {
+  transition: transform var(--motion-slow) var(--ease-standard);
 }
 
-// 同排卡片因为增删而让位时平滑挪过去，别瞬移
-.v-list-move.v-card {
-  transition: transform 200ms $standard-easing;
+// ===== 编辑面板 =====
+// 从点下去的那张卡片的位置长出来。位置和倍率由组件按卡片矩形算好
+// （见 HomeworkEditDialog.vue 的 dialogFrom），这里只负责把它接进 Vuetify 自带的
+// dialog-transition。终点保持 none，缩放和位移一起收回去。
+//
+// 字不跟着缩：整块按 0.2–0.9 倍缩放时，里面的文字必然糊成一片。所以缩放期间只露
+// 面板的底色和描边（.hw-card 自己），里面的内容延迟淡入——等长到接近原尺寸才见字，
+// 看到的是「卡片展开成面板」，而不是一张放大的截图。
+@media (prefers-reduced-motion: no-preference) {
+  .v-overlay__content.dialog-transition-enter-from,
+  .v-overlay__content.dialog-transition-leave-to {
+    opacity: 0;
+    transform: translate(var(--dialog-from-x, 0px), var(--dialog-from-y, 0px))
+      scale(var(--dialog-from-scale, 0.9));
+  }
+
+  .v-overlay__content.dialog-transition-enter-to,
+  .v-overlay__content.dialog-transition-leave-from {
+    opacity: 1;
+    transform: none;
+  }
+
+  // Vuetify 那几条时长带 !important，这里要盖过去也得带。
+  // 几何用标准缓出：前段不至于一下子冲到终点，才看得出是从卡片长出来的
+  .v-overlay__content.dialog-transition-enter-active {
+    transition:
+      transform var(--motion-slow) var(--ease-standard),
+      opacity 100ms linear !important;
+  }
+
+  .v-overlay__content.dialog-transition-enter-active .hw-card > * {
+    animation: dialog-content-in var(--motion-base) var(--ease-standard) 90ms both;
+  }
+
+  // 关的时候反过来：字先退，底板缩回卡片
+  .v-overlay__content.dialog-transition-leave-active {
+    transition:
+      transform 200ms var(--ease-accelerate),
+      opacity 110ms linear 70ms !important;
+  }
+
+  .v-overlay__content.dialog-transition-leave-active .hw-card > * {
+    animation: dialog-content-out 80ms var(--ease-accelerate) both;
+  }
 }
 
-// 对话框：去掉点击波纹，并关掉卡片的按压效果
-//.v-dialog {
-//  &::before,
-//  &::after {
-//    display: none !important;
-//  }
-//
-//  .v-card {
-//    transition: none;
-//
-//    &:active {
-//      transform: none;
-//    }
-//  }
-//}
-//
-//.v-dialog-transition-enter-active {
-//  transition:
-//    transform 400ms $emphasized-decelerate,
-//    opacity 300ms $standard-easing;
-//}
-//
-//.v-dialog-transition-leave-active {
-//  transition:
-//    transform 250ms $emphasized-accelerate,
-//    opacity 200ms $standard-accelerate;
-//}
+@keyframes dialog-content-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
 
-//TODO:全局设定touch-action: manipulation;提升响应速度
+@keyframes dialog-content-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
 
 // 按钮状态变化动画
 .v-btn {
@@ -103,7 +144,7 @@ $standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
   min-width: 40px;
 }
 
-// TODO: 全局禁用文字选择
+// TODO: 全局设定 touch-action: manipulation; 提升响应速度
 .no-select {
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -112,40 +153,38 @@ $standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
   -webkit-touch-callout: none;
 }
 
-//// 通用淡入淡出：凡是「硬切」的显示/隐藏都用它，模板里写 <Transition name="fade">。
-//// 入场 180ms 减速、出场 120ms 加速：进场柔和、离场利落，短到几乎察觉不到过程，
-//// 只把「啪」的一下抹平；再慢就变成拖泥带水，显摆。
-//// 这几条必须放在文件最后：上面 .v-btn、.v-card、.empty-subject-card 各自都带一条
-//// transition，权重跟这里一样，靠写在后面才盖得住它们（作业编辑里那两个留空的
-//// 键位就是 .v-btn.vis-fade，被 .v-btn 那条盖掉就等于没淡）
+// 通用淡入淡出：凡是「硬切」的显示/隐藏都用它，模板里写 <Transition name="fade">。
+// 入场 180ms 减速、出场 120ms 加速：进场柔和、离场利落，短到几乎察觉不到过程，
+// 只把「啪」的一下抹平。
+// 这几条必须放在文件最后：上面 .v-btn、.v-card、.empty-subject-card 各自都带一条
+// transition，权重跟这里一样，靠写在后面才盖得住它们（作业编辑里那两个留空的
+// 键位就是 .v-btn.vis-fade，被 .v-btn 那条盖掉就等于没淡）
 .fade-enter-active {
-  transition: opacity 180ms $standard-easing;
+  transition: opacity var(--motion-base) var(--ease-standard);
 }
 
 .fade-leave-active {
-  transition: opacity 120ms $standard-accelerate;
+  transition: opacity var(--motion-fast) var(--ease-accelerate);
 }
 
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
 }
-//
-//// 用 visibility 切换显示/隐藏的那几处（元素不能真拿掉：位置或者高度得留着，
-//// 拿掉的话旁边的东西当场跳一下）。平时挂 .vis-fade，要藏的时候加 .vis-fade-off。
-//// visibility 自己不插值，但 CSS 里它在两端之间一律当 visible，所以淡出这一整段
-//// 都还看得见，走完才真的藏起来——看着是淡出，位置和高度一点不动。
-//// 时长跟上面那套一致：进场 180ms、离场 120ms（过渡取的是变化之后那一档，
-//// 所以短的 120ms 写在 .vis-fade-off 上）
+
+// 用 visibility 切换显示/隐藏的那几处（元素不能真拿掉：位置或者高度得留着，
+// 拿掉的话旁边的东西当场跳一下）。平时挂 .vis-fade，要藏的时候加 .vis-fade-off。
+// visibility 自己不插值，但 CSS 里它在两端之间一律当 visible，所以淡出这一整段
+// 都还看得见，走完才真的藏起来——看着是淡出，位置和高度一点不动。
 .vis-fade {
   transition:
-    opacity 180ms $standard-easing,
-    visibility 180ms $standard-easing;
+    opacity var(--motion-base) var(--ease-standard),
+    visibility var(--motion-base) var(--ease-standard);
 }
 
 .vis-fade-off {
   opacity: 0;
   visibility: hidden;
-  transition-duration: 120ms;
-  transition-timing-function: $standard-accelerate;
+  transition-duration: var(--motion-fast);
+  transition-timing-function: var(--ease-accelerate);
 }

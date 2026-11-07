@@ -36,7 +36,7 @@ const PAPERS = ['卷子', '练习卷', '周末卷']
 const BOOKS = ['小白', '作业册', '练习册', '课本']
 
 // 小键盘底下那排量词（按使用频率排的）。刚敲完一个数字才需要它们，平时收起来（见 hints）
-export const BOTTOM_KEYS = ['张', '页', '课', '题', '空', '问']
+export const BOTTOM_KEYS = ['张', '页', '课', '题']
 
 // 决定「给哪一页建议」时，BOTTOM_KEYS 里那几个量词字不计入汉字（见 pageLetters）。
 // 直接由词表生成，量词增删了这里跟着变

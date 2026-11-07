@@ -63,12 +63,16 @@
        好让里面底部那排「添加作业」卡片在作业不满一屏时贴到视口底边 -->
   <div class="d-flex board-body">
     <v-container class="main-window flex-grow-1 no-select bloom-container" fluid>
+      <!-- 数据没读完不挂载：先挂一版空板再换数据，会留下旧的「添加作业」退场残影 -->
       <homework-grid
+        v-if="state.dataReady"
         ref="homeworkGrid"
         :sorted-items="sortedItems"
         :addable-subjects="addableSubjects"
         :content-style="state.contentStyle"
         :paused="state.dialogVisible"
+        :ready="state.dataReady"
+        :instant="state.instantSwitch"
         @open-dialog="openDialog"
       />
     </v-container>
@@ -79,6 +83,7 @@
     :title="currentEditSubject"
     :initial-date="state.editDate"
     :extra-subjects="currentEditExtraSubjects"
+    :origin="state.dialogOrigin"
     @save="handleHomeworkSave"
     @preview="handleHomeworkPreview"
   />
@@ -109,7 +114,6 @@ import {
   watchSettings,
 } from '@/utils/settings'
 import { dayDataKey, dayFromKey } from '@/utils/storageKeys'
-import { forceHoverIdle, resumeHoverIdle } from '@/utils/hoverIdle'
 import { copyImageToClipboard, hashBoard } from '@/utils/screenshot'
 import * as subjectStore from '@/utils/subjectStore'
 import { cloneDefaultSubjects } from '@/utils/subjects'
@@ -137,7 +141,15 @@ export default {
       currentEditSubject: '',
       state: {
         boardData: { homework: {} },
+        // 首屏数据（当天作业 + 科目表）读完之前，卡片一律不露面：
+        // 先露一版空板、数据到了再重排，就是用户看到的那下闪
+        dataReady: false,
+        // 换天这一帧先关掉卡片过渡：旧板和新板必须同一帧换完，
+        // 不能让离场卡、入场卡、添加卡各按各的时长错开
+        instantSwitch: false,
         dialogVisible: false,
+        // 点开面板的那张卡片在视口里的位置，面板从这儿长出来、也缩回这儿
+        dialogOrigin: null,
         dateString: '',
         // 本次打开编辑面板停在哪一天。卡片上点的是哪一天就进哪一天，
         // 没给（点科目名那个标题区）就跟着展示板正在看的那天
@@ -245,7 +257,7 @@ export default {
     },
     // 展示板只呈现「所看的这一天 + 更晚的日子」。
     // 更早的日子只可能是编辑面板里翻回去改的：存了档，但不该在这块板上冒出来。
-    // 看的是过去的日子时连更晚的一天都不摆：loadOtherDays 压根没把那些天读进来，
+    // 看的是过去的日子时连更晚的一天都不摆：readOtherDays 压根没把那些天读进来，
     // 但面板里翻过去改的实时预览照样会递上来日期，不在这里挡住就会漏到板上
     laterDays() {
       if (!this.showsFutureDays) return []
@@ -287,6 +299,9 @@ export default {
     } catch (err) {
       console.error('初始化失败:', err)
       this.showError('初始化失败，请刷新页面重试')
+    } finally {
+      // 失败也要放行：这时显示的是默认科目，至少还能点「添加作业」
+      this.state.dataReady = true
     }
   },
 
@@ -352,45 +367,50 @@ export default {
 
     async initializeData() {
       this.resolveViewDate()
-      await Promise.all([this.loadDayData(), this.loadSubjects()])
+      await this.commitSnapshot(this.state.dateString)
     },
 
-    async loadDayData() {
-      const response = await dataProvider.loadData(dayDataKey(this.state.dateString))
+    // 一次换天要改的东西（当天作业、后续日期、科目表）先全部读到局部变量，
+    // 最后在同一个同步块里提交。分成几次赋值的话，展示卡和添加卡会落在
+    // 不同帧里各更新各的，中间那版就是用户看到的错位和闪跳
+    async commitSnapshot(dateString) {
+      const snapshot = await this.readSnapshot(dateString)
+      this.state.dateString = dateString
+      this.state.boardData = snapshot.boardData
+      this.state.otherDays = snapshot.otherDays
+      this.state.availableSubjects = snapshot.subjects
+    },
+
+    async readSnapshot(dateString) {
+      const response = await dataProvider.loadData(dayDataKey(dateString))
+      let boardData = { homework: {} }
       if (!response.ok) {
         // NOT_FOUND 是压根没记录，读失败则是未知状态，两种都不记进 storedDates；
         // 在册的只在明确 NOT_FOUND 时才撤（比如记录已被删过）
-        if (response.error?.code === 'NOT_FOUND') this.storedDates.delete(this.state.dateString)
-        this.state.boardData = { homework: {} }
-      } else if (Array.isArray(response.data)) {
-        // 旧版数组格式：内容认不出来，别记在册——不然会被当成空记录删掉
-        this.state.boardData = { homework: {} }
-      } else {
-        this.storedDates.add(this.state.dateString)
-        this.state.boardData = {
-          homework: response.data.homework || response.data || {},
-        }
+        if (response.error?.code === 'NOT_FOUND') this.storedDates.delete(dateString)
+      } else if (!Array.isArray(response.data)) {
+        this.storedDates.add(dateString)
+        boardData = { homework: response.data.homework || response.data || {} }
       }
-      await this.loadOtherDays()
+      // 旧版数组格式：内容认不出来，别记在册——不然会被当成空记录删掉
+
+      const [otherDays, subjects] = await Promise.all([
+        this.readOtherDays(dateString),
+        subjectStore.loadSubjects(this.state.availableSubjects),
+      ])
+      return { boardData, otherDays, subjects }
     },
 
     // 当天和未来视图把更后面的作业一并读出来；查看过去日期时不启用——
     // 那块板只呈现那一天自己，别把后来的作业混进去
-    async loadOtherDays() {
-      const todayStr = this.todayString
-      if (this.state.dateString < todayStr) {
-        this.state.otherDays = []
-        return
-      }
+    async readOtherDays(dateString) {
+      if (dateString < this.todayString) return []
       try {
         const res = await dataProvider.loadKeys({ limit: 1000 })
-        if (!res.ok || !Array.isArray(res.data)) {
-          this.state.otherDays = []
-          return
-        }
+        if (!res.ok || !Array.isArray(res.data)) return []
         const dates = res.data
           .map(dayFromKey)
-          .filter((ds) => ds && ds > this.state.dateString)
+          .filter((ds) => ds && ds > dateString)
           .sort()
         const days = []
         for (const ds of dates) {
@@ -399,10 +419,10 @@ export default {
           this.storedDates.add(ds)
           days.push({ dateString: ds, homework: data.homework || {} })
         }
-        this.state.otherDays = days
+        return days
       } catch (error) {
         console.warn('加载后续日期作业失败:', error)
-        this.state.otherDays = []
+        return []
       }
     },
 
@@ -440,7 +460,7 @@ export default {
 
     // 读一天的存档：读不到、读失败、旧版数组格式都算「没有可用记录」，返回 null。
     // 旧版数组格式的内容认不出来，调用方别把它记进 storedDates，
-    // 不然会被当成空记录删掉（见 loadDayData 里的说明）
+    // 不然会被当成空记录删掉（见 readSnapshot 里的说明）
     async readStoredDay(dateString) {
       const response = await dataProvider.loadData(dayDataKey(dateString))
       if (!response.ok || Array.isArray(response.data)) return null
@@ -512,17 +532,12 @@ export default {
       }
     },
 
-    // 科目配置从共享存储读：读不到就保留现有清单
-    // （首次启动时现有清单本来就是默认的；翻日期时不能把已经读到的配置重置掉）
-    async loadSubjects() {
-      this.state.availableSubjects = await subjectStore.loadSubjects(this.state.availableSubjects)
-    },
-
     // 编辑入口，key 就是科目名；对话框初始停在哪一天由 options.date 给：
     // 卡片上点的是哪一天就进哪一天，没给就跟着展示板正在看的那天（点标题区走这条）
     openDialog(key, options = {}) {
       this.currentEditSubject = key
       this.state.editDate = options.date || this.state.dateString
+      this.state.dialogOrigin = options.origin || null
       this.state.dialogVisible = true
     },
 
@@ -606,8 +621,6 @@ export default {
       if (!grid) return
       this.state.capturing = true
       try {
-        // 截图前立刻收掉悬停，免得把鼠标正指着的那张卡带进图里
-        forceHoverIdle()
         const blob = await grid.captureCards()
         await copyImageToClipboard(blob)
         this.state.lastScreenshotHash = hashBoard(this.sortedItems, this.state.dateString)
@@ -618,8 +631,6 @@ export default {
         this.$message.error('截图失败', error?.message || '请重试')
       } finally {
         this.state.capturing = false
-        // 拍完了，悬停恢复正常（重新计时，不动鼠标也不会一直挂着）
-        resumeHoverIdle()
       }
     },
 
@@ -635,17 +646,22 @@ export default {
 
     async handleDateSelect(newDate) {
       if (!newDate) return
+      const selectedDate = this.ensureDate(newDate)
+      const dateStr = this.formatDate(selectedDate)
+      if (dateStr === this.state.dateString) return
+      this.state.instantSwitch = true
       try {
-        const selectedDate = this.ensureDate(newDate)
-        const dateStr = this.formatDate(selectedDate)
-        if (dateStr === this.state.dateString) return
-        this.state.dateString = dateStr
+        // 数据读完之前板上仍是旧的一天；读完后在 commitSnapshot 里一次性换掉。
+        // 不先切日期再等数据：那会让旧卡片配着新日期先渲染一版
+        await this.commitSnapshot(dateStr)
         this.state.selectedDateObj = selectedDate
-        await Promise.all([this.loadDayData(), this.loadSubjects()])
         this.refreshScreenshotMatch()
+        await this.$nextTick()
       } catch (error) {
         console.error('日期处理错误:', error)
         this.$message.error('日期处理错误', '请重新选择日期')
+      } finally {
+        this.state.instantSwitch = false
       }
     },
 
@@ -660,19 +676,3 @@ export default {
 }
 </script>
 
-<style scoped>
-/* 「回到今天」的淡入淡出：只改 opacity，不掺位移、外边距，
-   淡出走到一半也不会挪位置 */
-.fade-enter-active {
-  transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1);
-}
-
-.fade-leave-active {
-  transition: opacity 160ms cubic-bezier(0.3, 0, 1, 1);
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-</style>

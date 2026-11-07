@@ -1,33 +1,36 @@
 <template>
   <!-- 作业卡片区在上、底部那排「添加作业」在下。纵向 flex + 后者的 margin-top:auto，
        作业不满一屏时后者就贴在视口底边（见 styles/index.scss 的 .empty-subjects） -->
-  <div class="grid-body">
-    <!-- 作业卡片：按实测高度分列，各列独立纵向堆叠（无网格行、无行对齐）。
+  <div
+    class="grid-body"
+    :class="{ 'grid-body-pending': bodyHidden, 'grid-instant': instant }"
+  >
+    <!-- 作业卡片：CSS Grid 瀑布流，行高 1px，每张按实测高度跨行。
        列数只按窗口宽度分档，不看设备类型。
-         分列还没按当前内容算好之前整块藏着，免得先摆一版临时位置再瞬移 -->
+       首屏还没量好之前整块藏着，免得先摆一版临时位置再瞬移 -->
     <div
       ref="gridContainer"
       class="grid-masonry"
-      :class="{ 'grid-pending': pendingLayout, 'grid-pending-instant': layoutHold }"
+      :class="{ 'grid-initial': !layoutReady }"
+      :style="gridStyle"
     >
-      <!-- 还没算好分列的那几轮（整块是 opacity:0 的）不要播放入场/离场动画：
-           离场元素会被挂住一两帧，露出来的第一帧就可能看到临时分列的残影 -->
-      <TransitionGroup
-        v-for="(col, ci) in columnItems"
-        :key="ci"
-        name="grid"
-        :move-class="pendingLayout ? 'grid-move-instant' : 'grid-move'"
-        :css="!pendingLayout"
-        tag="div"
-        class="grid-column"
-      >
-        <div v-for="item in col" :key="item.key" class="grid-item" :data-key="item.key">
+      <!-- 只留一个 TransitionGroup：换列时卡片 key 不从一组挪到另一组，
+           换位就是同一批节点改位置，不会演成「离场 + 入场」的残影 -->
+      <TransitionGroup name="grid" @before-leave="holdLeavingBox">
+        <div
+          v-for="item in sortedItems"
+          :key="item.key"
+          class="grid-item"
+          :class="{ 'grid-item-unplaced': !isPlaced(item) }"
+          :data-key="item.key"
+          :style="itemStyle(item)"
+        >
           <v-card
             border
             class="hw-card"
             height="100%"
             rounded="md"
-            @click="$emit('open-dialog', item.key)"
+            @click="openCard(item, $event)"
           >
             <!-- 科目名独占一行，小标题按段落正常单独显示。
                  这一行没有自己的点击处理，冒泡到卡片上：不带日期进编辑面板，
@@ -50,7 +53,7 @@
                 v-for="(day, di) in buildDays(item)"
                 :key="di"
                 class="hw-day"
-                @click.stop="openDay(item, day)"
+                @click.stop="openDay(item, day, $event)"
               >
                 <template v-for="(block, bi) in day.blocks" :key="bi">
                   <v-divider v-if="di > 0 || bi > 0" class="hw-divider" />
@@ -91,16 +94,16 @@
              的子元素 participating 网格排布；套一层 div 就只剩一个子元素，会排成竖排 -->
         <TransitionGroup
           name="v-list"
-          move-class="v-list-move"
           @before-leave="holdLeavingBox"
         >
           <v-card
             v-for="subject in addableSubjects"
             :key="subject.name"
+            :data-key="subject.name"
             border
             rounded="md"
             class="empty-subject-card"
-            @click="openAddDialog(subject)"
+            @click="openAddDialog(subject, $event)"
           >
             <v-card-title class="text-subtitle-1">
               {{ subject.name }}
@@ -121,7 +124,6 @@ import { holdLeavingBox } from '@/utils/domHold'
 import { splitContent } from '@/utils/homeworkList'
 import { parseHeadingLine } from '@/utils/homeworkReserve'
 import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
-import { assignColumns as distributeColumns } from '@/utils/masonry'
 import { captureElement } from '@/utils/screenshot'
 
 // 列数只按窗口宽度分档，不看设备类型：手机竖屏 1 列、窄屏 2 列、
@@ -158,31 +160,31 @@ export default {
     contentStyle: { type: Object, default: () => ({}) },
     // 作业编辑面板开着时页面不能动，自动上滑也一并停掉
     paused: { type: Boolean, default: false },
+    // 当天作业和科目表都读完了才放行；此前整块卡片（含「添加作业」）不露面
+    ready: { type: Boolean, default: true },
+    // 换天时整块硬切：这一帧不加任何卡片过渡，避免旧卡离场、新卡入场
+    // 和添加卡各自错开，看起来像闪了一下
+    instant: { type: Boolean, default: false },
   },
   emits: ['open-dialog'],
   data() {
     return {
-      // 布局版本号：分列结果变化时才 +1，避免量高度触发无限重渲染
+      // 布局版本号：卡片占的行数变化时才 +1，避免量高度触发无限重渲染
       layoutVersion: 0,
-      // 分列刚算出来、还没渲染到 DOM 上：这一小段先藏着，等这一版真摆出来了再露
-      layoutSettling: false,
-      // 列数变化时至少藏住一帧，别让旧高度排出来的临时位置闪出来
-      layoutHold: false,
       // 窗口宽度（px）。只按宽度决定列数，窗口一变就重算
       layoutWidth: typeof window === 'undefined' ? 0 : window.innerWidth,
+      // 首屏是否已经分好列并量完高度。没量完之前 opacity 为 0，
+      // 不能先露一版临时摆法再重排
+      layoutReady: false,
     }
   },
   created() {
-    // 实测的卡片高度（非响应式，靠 layoutVersion 触发重算），
-    // 每张的高度里已经带上了它自己那一份卡片间距
-    this._heights = {}
-    this._signature = ''
-    // 分列连续变化了几轮（收敛用；兜底防止一直藏下去）
-    this._settlePasses = 0
-    // 列数变化时连开几轮布局校验，用序号取消旧的回调
-    this._layoutHoldSeq = 0
+    // 实测的卡片要横跨几行（非响应式，靠 layoutVersion 触发重算）
+    this._spans = {}
     // 待执行的自动上滑的定时器
     this._scrollTimer = 0
+    // 首屏等动画收尾的 rAF 句柄
+    this._revealRaf = 0
   },
   computed: {
     // 当前窗口宽度允许的列数（不含「卡片少时收缩」）
@@ -195,20 +197,16 @@ export default {
       if (count <= 0) return 1
       return Math.max(1, Math.min(count, this.responsiveColumns))
     },
-    // 渲染用的分列结果（透传方法，保证每次拿到的都是现算的）
-    columnItems() {
-      // 列分配依赖字号和布局，窗口一变就得重算
-      void this.layoutVersion
-      return this.assignColumns()
+    // 列数写进内联样式：CSS Grid 负责把卡片放进各列，跨列换位时节点不换组
+    gridStyle() {
+      return {
+        gridTemplateColumns: `repeat(${this.effectiveColumns}, minmax(0, 1fr))`,
+      }
     },
-    // 分列还没按当前内容算好、也没摆到 DOM 上：整块先藏着。
-    // 露出来的时候，位置就是最终位置，不会先摆一版临时分列再瞬移
-    pendingLayout() {
-      // 高度存在非响应式的 _heights 里，靠 layoutVersion 触发重算
-      void this.layoutVersion
-      const items = this.sortedItems || []
-      if (!items.length) return false
-      return this.layoutHold || this.layoutSettling || items.some((item) => this._heights?.[item.key] == null)
+    // 整块只在首屏量好前隐形。换日期/增删卡不藏整块：
+    // 旧卡留在原位，新数据到了逐张换位，避免整块淡出再淡入
+    bodyHidden() {
+      return !this.layoutReady
     },
     // 每张卡各段正文的解析结果（按段切开），buildDays 共用这一份。
     // buildDays 在模板里逐帧调用，各解析一遍等于每帧白算一次；
@@ -229,7 +227,9 @@ export default {
   mounted() {
     // 首屏同步量一次（此时 DOM 已就绪、通常还未绘制），避免先闪一下再重排
     this.updateLayout()
-    this.$nextTick(() => this.updateLayout())
+    this.$nextTick(() => {
+      if (this.ready && this.updateLayout() === false) this.revealWhenSettled()
+    })
     // 字体后加载会改变卡片高度，加载完再平衡一次
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => this.updateLayout())
@@ -242,29 +242,46 @@ export default {
   },
   updated() {
     this.$nextTick(() => {
-      this.updateLayout()
+      // 这一版的分列刚变、DOM 上还是上一版的摆法：等下一轮渲染完再补动画
+      if (this.updateLayout()) {
+        this.armIdleScroll()
+        return
+      }
+      // 分列已稳定：等入场/退场/换位的过渡都收尾再露，避免露出半截动画
+      if (this.ready) this.revealWhenSettled()
       // 卡片增减会改变视野里的那一段，重新判断要不要计时
       this.armIdleScroll()
     })
   },
   beforeUnmount() {
     this.cancelIdleScroll()
-    this._layoutHoldSeq++
+    cancelAnimationFrame(this._revealRaf)
     window.removeEventListener('scroll', this.handleViewportChange)
     window.removeEventListener('resize', this.handleWindowResize)
     document.removeEventListener('pointerdown', this.cancelIdleScroll, true)
   },
   watch: {
-    // 宽度分档变了：只按列数变化处理，同一档内缩放宽高不重排
-    responsiveColumns() {
-      this.holdLayoutForColumnChange()
+    // 数据读完再量一遍，量稳了才放行首屏
+    ready(value) {
+      if (!value) {
+        this.layoutReady = false
+        return
+      }
+      this.$nextTick(() => {
+        if (this.updateLayout() === false) this.revealWhenSettled()
+      })
+    },
+    // 列数变了：直接按新宽度重排，不淡出、不遮整块
+    effectiveColumns() {
+      this.$nextTick(() => this.updateLayout())
     },
     paused(value) {
       if (value) {
         this.cancelIdleScroll()
         return
       }
-      // 面板关掉了，卡片区还露着就接着算
+      // 面板关掉了：量一遍最终的版式，再重新判断要不要计时
+      this.updateLayout()
       this.$nextTick(() => this.armIdleScroll())
     },
   },
@@ -282,29 +299,6 @@ export default {
       this.handleViewportChange()
     },
 
-    // 列数一变，旧卡片高度对应的分列就作废了。先整块藏住，量完新宽度下
-    // 的真实高度、等 DOM 真正摆稳后再露，避免卡片先闪到空位再被顶下去。
-    holdLayoutForColumnChange() {
-      this.layoutHold = true
-      const seq = ++this._layoutHoldSeq
-      const nextFrame = (fn) => {
-        requestAnimationFrame(() => {
-          if (seq === this._layoutHoldSeq) fn()
-        })
-      }
-      this.$nextTick(() => {
-        this.updateLayout()
-        nextFrame(() => {
-          this.$nextTick(() => {
-            this.updateLayout()
-            nextFrame(() => {
-              this.layoutHold = false
-            })
-          })
-        })
-      })
-    },
-
     // 已经在计时就别重置，否则每次重排都会把上滑往后顺延一次
     armIdleScroll() {
       if (this._scrollTimer || this.paused || !this.shouldHideEmptySubjects()) return
@@ -320,8 +314,34 @@ export default {
     },
 
     // 底部这张卡片：还没有内容的科目从这儿进来
-    openAddDialog(subject) {
-      this.$emit('open-dialog', subject.name)
+    openAddDialog(subject, event) {
+      this.$emit('open-dialog', subject.name, { origin: this.cardRect(event) })
+    },
+
+    // 点展示卡片（标题区、留白）：不带日期，跟当前看的那天走
+    openCard(item, event) {
+      this.$emit('open-dialog', item.key, { origin: this.cardRect(event) })
+    },
+
+    // 交给编辑面板做「从这张卡片长出来」的起点。用普通对象，
+    // 跨组件传的只是四个数，不用把 DOMRect 带过去
+    cardRect(event) {
+      const card = event?.currentTarget?.closest?.('.empty-subject-card, .grid-item')
+      if (!card) return null
+      const rect = card.getBoundingClientRect()
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+    },
+
+    // 还没量到高度（刚加进来、还没落位）的卡片先隐形，等行数算好再露面
+    isPlaced(item) {
+      void this.layoutVersion
+      return this._spans?.[item.key] != null
+    },
+
+    // 卡片占几行：行高 1px、行距 11px，往上取整到能容下实测高度
+    itemStyle(item) {
+      void this.layoutVersion
+      return { gridRowEnd: `span ${this._spans?.[item.key] || 1}` }
     },
 
     // 离场卡片钉在原位（实现见 utils/domHold，与设置页共用同一份）
@@ -329,9 +349,9 @@ export default {
 
     // 点卡片上某一天的那一块：直接进那一天，不用先进今天再自己往前翻。
     // 卡片冒泡上来的那次点击（标题区、卡片留白）不带日期，走的是另一条路
-    openDay(item, day) {
+    openDay(item, day, event) {
       if (!day?.dateString) return
-      this.$emit('open-dialog', item.key, { date: day.dateString })
+      this.$emit('open-dialog', item.key, { date: day.dateString, origin: this.cardRect(event) })
     },
 
     // 截图取景范围只到卡片区：不含底部那排「添加作业」，也不含顶部工具栏。
@@ -364,44 +384,48 @@ export default {
       window.scrollTo({ top: window.scrollY - distance, behavior: 'smooth' })
     },
 
-    // 按实测高度把卡片分列（算法在 utils/masonry，这里只管把「卡片对象 ↔ 下标」对上）。
-    // 还没量到高度时（首屏第一帧）按序号取余，保证每张都有位置、能被量到。
-    // 注意：必须是普通方法（每次现算），不能是 computed——
-    // 高度存在非响应式的 _heights 里，computed 缓存会让 updateLayout 永远读到旧分配
-    assignColumns() {
-      const items = this.sortedItems || []
-      const heights = items.map((item) => this._heights?.[item.key])
-      return distributeColumns(heights, this.effectiveColumns).map((idxs) => idxs.map((i) => items[i]))
-    },
-
-    // 实测每张卡片高度，按签名变化才触发重排，保证收敛不循环
-    updateLayout() {
+    // 首屏放行：分列稳定还不够，入场/退场/换位动画也得收尾，
+    // 否则整块刚淡入时旧节点还在，露出来就是「闪一下再少几张」
+    revealWhenSettled() {
+      if (!this.ready || this.layoutReady) return
       const container = this.$refs.gridContainer
       if (!container) return
-      const colEl = container.querySelector('.grid-column')
-      const gap = colEl ? parseFloat(window.getComputedStyle(colEl).rowGap) || 0 : 0
-      const heights = {}
-      container.querySelectorAll('.grid-item').forEach((el) => {
-        // 卡片间的留白算进卡片自己的高度，这样一列的高度就是纯求和，
-        // 不用再管「这一列的第一张要不要算留白」这种分支
-        if (el.dataset.key) heights[el.dataset.key] = el.offsetHeight + gap
-      })
-      this._heights = heights
-      const sig = this.assignColumns()
-        .map((col) => col.map((i) => i.key).join(','))
-        .join('|')
-      if (sig !== this._signature) {
-        this._signature = sig
-        this.layoutVersion++
-        // 分列变了：这一版还没渲染到 DOM 上，现在露出来看到的仍是上一版。
-        // 继续藏着，等下一轮量出来还是这个分列，才算真的算好了（留个上限兜底）
-        this.layoutSettling = this._settlePasses++ < 4
+      const busy = container.querySelector('.grid-enter-active, .grid-leave-active, .grid-move')
+      if (busy) {
+        cancelAnimationFrame(this._revealRaf)
+        this._revealRaf = requestAnimationFrame(() => this.revealWhenSettled())
         return
       }
-      this._settlePasses = 0
-      // 分列和上一轮一致，DOM 里摆的就是算好的那一版，可以露出来了
-      this.layoutSettling = false
+      this.layoutReady = true
     },
+
+    // 实测每张卡片高度，换算成网格行数。行数变了才触发重渲染，保证收敛不循环
+    updateLayout() {
+      const container = this.$refs.gridContainer
+      if (!container) return false
+      const styles = window.getComputedStyle(container)
+      const rowHeight = parseFloat(styles.gridAutoRows) || 1
+      // row-gap 为 0，卡片间距靠 span 预留；否则整数行的余数会叠在
+      // 每张卡下面，间距一张一个样
+      const rowGap = parseFloat(styles.getPropertyValue('--grid-row-gap')) || 0
+      const spans = {}
+      let changed = false
+      container.querySelectorAll('.grid-item').forEach((el) => {
+        const key = el.dataset.key
+        if (!key) return
+        const span = Math.max(1, Math.ceil((el.offsetHeight + rowGap) / rowHeight))
+        spans[key] = span
+        if (this._spans?.[key] !== span) changed = true
+      })
+      this._spans = spans
+      if (changed) {
+        // 行数变了：这一版还没写到 DOM 上，下一轮渲染完再看
+        this.layoutVersion++
+        return true
+      }
+      return false
+    },
+
     // 一张卡片按天分块：一天一块，块里是那天的正文按空行和标题行分的几段。
     // 每段有标题行就是「日期的 + 标题名」，没有就是「日期的作业」，
     // 当天又没有标题行时不出小标题，只留分割线。
@@ -522,7 +546,7 @@ export default {
   cursor: pointer;
 }
 
-/* 这一列纵向排：上面的作业卡片按内容高，下面那排「添加作业」由 margin-top:auto
+/* 上面的作业卡片按内容高，下面那排「添加作业」由 margin-top:auto
    顶到最下面（styles/index.scss 里 .empty-subjects 的那条）。
    不写 min-height:0：作业写满一屏时这一列要能被内容顶高，页面照常往下滚 */
 .grid-body {
@@ -531,11 +555,29 @@ export default {
   flex: 1 1 auto;
 }
 
+/* 首屏没算好之前整块不露面：作业卡和添加卡必须同一帧出现，
+   否则数据晚到一步，添加卡会被作业卡顶下去，看着就是闪一下再重排 */
+.grid-body-pending {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 首屏分列过程中不要放过渡：位置会连续校正，放动画反而留下半截位移 */
+.grid-initial .grid-item {
+  transition: none !important;
+}
+
+/* 换天只切内容，不做过渡：旧卡、新卡、添加卡同一帧到位 */
+.grid-instant .grid-item,
+.grid-instant .grid-item .v-card,
+.grid-instant .empty-subject-card {
+  transition: none !important;
+}
+
 /* 科目名、小标题、正文三处之间的间距统一取这一个值 */
 .hw-card {
   --hw-gap: 6px;
-  /* 自己给手型光标，不用 Vuetify 的 .cursor-pointer：那个工具类带 !important，
-     悬停收掉之后（styles/index.scss 的 idle 规则）压不下去 */
+  /* 自己给手型光标，不用 Vuetify 的 .cursor-pointer */
   cursor: pointer;
 }
 

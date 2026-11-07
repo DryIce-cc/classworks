@@ -448,20 +448,14 @@ export default {
 
 <style scoped>
 /* 照抄首页「点击添加作业」卡片（styles/index.scss 的 .empty-subject-card）：
-   同样 border + rounded md、同样留白、同样平时压到 0.8 悬停回 1。
-   不带它的 hover 上浮和阴影——卡片本来就是拿来挪来挪去的，一上浮看着像没对齐 */
+   同样 border + rounded md、同样留白。
+   过渡在全局（styles/index.scss 的 .subject-card）：scoped 规则会多带一个
+   属性选择器，压过 TransitionGroup 的进出场规则 */
 .subject-card {
-  opacity: 0.8;
   cursor: grab;
   /* 手指一动就被当成滚页面的话，pointermove 会断，触摸根本拖不起来 */
   touch-action: none;
-  transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1);
 }
-
-/* 鼠标静止之后收掉悬停：这条本来是这里的 .subject-card:hover，
-   现在挪到 styles/index.scss 里，写成 html:not(.hw-hover-idle) .subject-card:hover。
-   不能留在这儿——这是 scoped 样式，全局选择器里的 html 会被套上本组件的
-   scope 属性，永远匹配不上 */
 
 /* 拖起来的那张留在网格里占着坑（visibility 不占布局，位置不会塌），
    跟着指针走的是外面那个小片。这张就只等着被 TransitionGroup 挪到新格子 */

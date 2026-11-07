@@ -11,7 +11,6 @@
 
 <script setup>
 import { onBeforeUnmount, onMounted } from 'vue'
-import { startHoverIdle, stopHoverIdle } from '@/utils/hoverIdle'
 
 // 深色主题只在 plugins/vuetify.js 里定（defaultTheme: 'dark'），这里不再重复强制
 
@@ -33,11 +32,9 @@ function onContextMenu(event) {
 
 onMounted(() => {
   document.addEventListener('contextmenu', onContextMenu, true)
-  startHoverIdle()
 })
 
 onBeforeUnmount(() => {
-  stopHoverIdle()
   document.removeEventListener('contextmenu', onContextMenu, true)
 })
 </script>
@@ -46,20 +43,23 @@ onBeforeUnmount(() => {
 @import '@/styles/transitions.scss';
 @import '@/styles/global.scss';
 
+/* 页面切换：只做 4px 的上下错位，不做横向滑动。
+   横向位移在全宽页面上会扫过整屏，看着像浏览器翻页；上下这点幅度只是
+   把「换页」和「内容重排」区分开 */
 .md3-enter-active,
 .md3-leave-active {
   transition:
-    opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-standard);
 }
 
 .md3-enter-from {
   opacity: 0;
-  transform: translateX(0.5vw);
+  transform: translateY(4px);
 }
 
 .md3-leave-to {
   opacity: 0;
-  transform: translateX(-0.5vw);
+  transform: translateY(-4px);
 }
 </style>

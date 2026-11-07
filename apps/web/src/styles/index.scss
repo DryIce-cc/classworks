@@ -1,48 +1,48 @@
-// 各列独立纵向堆叠：没有网格行，列之间互不干扰；
-// 纵向间距只由每列的 row-gap 决定，处处相等
+// 卡片用 CSS Grid 摆：行高 1px，每张卡按实测高度跨行。
+// 所有卡片都在同一个 TransitionGroup 里，换列只是换格子，不会离场再入场。
 .grid-masonry {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  grid-auto-flow: dense;
+  grid-auto-rows: 1px;
+  align-items: start;
+  column-gap: 8px;
+  // 行间距不交给 row-gap：跨行高度是整数行，row-gap 会在每张卡下面
+  // 再叠 0~10px 的余数，导致卡间距忽大忽小。改成 0，把间距算进 span
+  --grid-row-gap: 10px;
+  row-gap: 0;
   // 一圈留白用 margin 而不是 padding。下边距比上面多一截：原来「添加作业」
   // 那块自己带 mt-4（16px），它的上外边距让给 margin-top:auto 了，间距挪到这儿
   margin: 10px 10px 26px;
   padding: 0;
-  column-gap: 8px;
-}
-
-.grid-column {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  row-gap: 11px;
-  // 离场的卡片绝对定位后留在本列原处（见 transitions.scss），得有个定位父级
+  // 离场卡片绝对定位后留在本区块原处，得有个定位父级
   position: relative;
 }
 
 .grid-item {
   width: 100%;
-  transition: all 0.2s ease;
+  min-width: 0;
 }
 
-// 作业卡片悬停：与下方"添加作业"卡片一致（同样的阴影、过渡，缩放略小一点）
-.grid-item .v-card {
-  transition: all 250ms cubic-bezier(0.2, 0, 0, 1);
+// 按下时轻轻收一下，松手慢慢回来。卡片是整块可点的，点下去到面板长出来
+// 之间有一段空档，这点回弹就是「点到了」的即时回应；按下去比松手快，
+// 手感才不拖。幅度压到 0.6%，只是让边缘动一下，不晃眼
+.grid-item .v-card,
+.empty-subject-card {
+  transition: transform var(--motion-base) var(--ease-standard);
 }
 
-// 悬停效果在鼠标静止时被收掉，做法是给这条规则加一道门：
-// html 上没有 .hw-hover-idle（也就是鼠标还在动）时才生效。
-//
-// 为什么是「让 hover 规则不生效」而不是「另写一份平时的值盖上去」：
-// 后面那种写法得把每个元素的静止值再抄一遍，Vuetify 卡片那一层的阴影是好几层
-// rgba 叠出来的，抄不全、抄错了还看不出来。这么写就不用抄——规则不匹配，
-// 元素自然落回它本来那条规则长什么样。
-//
-// 新增 hover 效果的时候，记得同样套上 html:not(.hw-hover-idle)。
-// 漏了的那一条，鼠标静止之后还会亮着——这是这套做法唯一的代价。
-//
-// 只管悬停，按下的效果一条都没碰（:active 不受这个门管）
-html:not(.hw-hover-idle) .grid-item .v-card:hover {
+.grid-item .v-card:active,
+.empty-subject-card:active {
+  transform: scale(0.994);
+  transition-duration: var(--motion-fast);
+}
+
+// 全站关闭 Vuetify 的悬停蒙版：卡片、按钮、输入框悬停时都不再点亮。
+// 这颗变量由主题类提供，单改 :root 不够，主题类自己那份也要按下去
+html,
+html .v-theme--light,
+html .v-theme--dark {
+  --v-hover-opacity: 0 !important;
 }
 
 // v-main 默认是块容器，高度纯由内容撑。改成纵向 flex：工具栏照旧占它自己那份，
@@ -88,44 +88,21 @@ html:not(.hw-hover-idle) .grid-item .v-card:hover {
   position: relative;
 }
 
-.empty-subject-card {
+// 设置页的科目卡：过渡必须留在全局。写进组件的 scoped 样式会多带一个
+// 属性选择器，权重压过 .v-list-enter-from / .v-list-leave-to，进出场就淡不起来了
+.subject-card {
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-slow) var(--ease-standard);
 }
 
-// 空科目卡片：鼠标静止一秒后悬停收掉（时长在 App.vue 的 IDLE_HOVER_MS，
-// 做法见上面 .grid-item 那段的注释）
-html:not(.hw-hover-idle) .empty-subject-card:not(:disabled):hover {
+// 截图那一会儿（见 utils/screenshot.js）：过渡停住，克隆读到的就是静止状态，
+// 不会拍到淡出一半的中间帧
+html.hw-capture-clean {
+  pointer-events: none;
 }
 
-// 设置页的科目卡：同上，套上那道门。
-// 放在全局这里而不是组件的 scoped 样式里——scoped 会给 html 也套上本组件的
-// scope 属性，那条全局选择器就永远不匹配了
-html:not(.hw-hover-idle) .subject-card:hover {
-  opacity: 1;
-}
-
-// 悬停收掉之后，卡片上的手型光标也要退回默认：鼠标还指着卡片、光标却还是手型，
-// 看着像还能点。只给用 idle 门的那几种卡片加，别处的光标不动
-html.hw-hover-idle .grid-item .v-card,
-html.hw-hover-idle .empty-subject-card {
-  cursor: default;
-}
-
-// Vuetify 自己那套悬停：卡片、按钮、chip、输入框悬停时蒙版会变亮一点，
-// 看着像「被点亮了」。那个蒙版不是 ::after，是真实的一个子元素
-// （.v-card__overlay / .v-btn__overlay / .v-field__overlay …），
-// 按元素名去覆盖就得一个个列，Vuetify 一升级又漏。
-//
-// 改成把它算这个透明度的那颗变量整个归零：
-//     .v-card:hover > .v-card__overlay { opacity: calc(var(--v-hover-opacity) * …) }
-// 这颗变量是主题给的（.v-theme--dark 上写着 0.04），往下继承，谁都没重新赋值过。
-// 归零之后所有组件的悬停蒙版一起淡掉，新增组件不用管。
-//
-// 只动悬停这颗，.v-activated-opacity（选中／展开）那几颗没碰，
-// .v-field 那种「底色本来就有的」也不是靠它，那部分照常
-// 这颗变量写在三处：:root、.v-theme--light、.v-theme--dark。后两个是 Vuetify
-// 挂在应用根上的主题类，卡片就是从那儿继承到 0.04 的——所以光改 html 上那一份
-// 没用，得把主题类自己那份也按下去，否则组件照旧继承 0.04
-html.hw-hover-idle,
-html.hw-hover-idle :is(.v-theme--light, .v-theme--dark) {
-  --v-hover-opacity: 0;
+html.hw-capture-clean,
+html.hw-capture-clean * {
+  transition: none !important;
 }

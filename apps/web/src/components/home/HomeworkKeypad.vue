@@ -316,8 +316,9 @@ export default {
 /* 量词那一排。六个键对不上三列，所以自己一行、均分整行，
    硬凑进上面那个网格只会让键宽一会儿宽一会儿窄 */
 .measure-row {
+  margin: 0 15px;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--key-gap);
 }
 

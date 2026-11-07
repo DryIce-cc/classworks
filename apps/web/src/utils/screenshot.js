@@ -4,8 +4,10 @@
 // 连同样式塞进一个 <svg><foreignObject> → 浏览器把这段渲染成图片 → 画进 canvas。
 // 排版还是浏览器自己算的，所以和屏幕上看到的是同一套结果。可能对不上的只有
 // 克隆时拿不到的东西：外部字体/图片（本页没有）、伪元素（库会单独补一份）、
-// 视口单位（只出现在工具栏，不在截图范围内），以及 :hover / 过渡这类瞬时状态
-// （克隆里没有悬停，正好不会把鼠标正指着的那张卡带进图里）。
+// 视口单位（只出现在工具栏，不在截图范围内）。:hover 这类瞬时状态得自己躲：
+// 克隆抓的是「此刻算好的样式」，鼠标正指着的那张卡会带着悬停一起进图，
+// 所以拍之前先给 html 挂一个类把悬停和过渡都停掉（见 styles/index.scss 的
+// .hw-capture-clean），拍完立刻撤掉。
 //
 // 选它而不是 html-to-image 的原因：后者克隆样式时会把字号减 0.1px，行高跟着变，
 // 卡片高度和每一行的位置会漂一两像素；实测这套 DOM 用它能做到逐像素一致，
@@ -48,15 +50,26 @@ export async function captureElement(element) {
   // 按屏幕像素密度出图，贴到聊天软件里不糊；2 倍封顶，免得整页长图大到 canvas 存不下
   const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
 
-  const rendered = await domToCanvas(element, {
-    backgroundColor,
-    // 本页没有网络字体：跳过字体嵌入，省掉一轮样式表抓取
-    font: false,
-    scale: pixelRatio,
-    // 长图兜底：超过这个边长就整体缩小。不设的话 canvas 建不出来，
-    // 会得到一张空白图（2 倍图下 8000 CSS px 高以内都还是原尺寸）
-    maximumCanvasSize: 16000,
-  })
+  // 拍之前把鼠标底下的悬停收干净：pointer-events:none 让 :hover 立刻失效，
+  // 过渡同时停住，克隆读到的就是静止状态，不会拍到淡出一半的中间帧
+  const root = document.documentElement
+  root.classList.add('hw-capture-clean')
+  // 逼一次样式计算，确保类生效之后再克隆
+  void element.offsetHeight
+  let rendered
+  try {
+    rendered = await domToCanvas(element, {
+      backgroundColor,
+      // 本页没有网络字体：跳过字体嵌入，省掉一轮样式表抓取
+      font: false,
+      scale: pixelRatio,
+      // 长图兜底：超过这个边长就整体缩小。不设的话 canvas 建不出来，
+      // 会得到一张空白图（2 倍图下 8000 CSS px 高以内都还是原尺寸）
+      maximumCanvasSize: 16000,
+    })
+  } finally {
+    root.classList.remove('hw-capture-clean')
+  }
 
   // 出图倍率按实际像素算（长图超过 canvas 上限时库会自动缩小）
   const cssWidth = element.getBoundingClientRect().width || element.clientWidth
