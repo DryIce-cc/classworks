@@ -61,6 +61,8 @@
                 @click="shiftDate(-1)"
               />
               <!-- close-on-content-click 必须为 false：默认 true 会在选择器里点任何地方都把它自己关掉 -->
+              <!-- 日期选择器挂在 body 上（浮层默认位置），不在对话框的 zoom 子树里，
+                   所以缩放要单独补一份，否则面板缩到 60% 它还是原尺寸 -->
               <v-menu v-model="pickerOpen" :close-on-content-click="false" location="bottom">
                 <template #activator="{ props: activatorProps }">
                   <v-btn
@@ -71,7 +73,9 @@
                     title="选择日期"
                   />
                 </template>
-                <v-card border>
+                <!-- zoom 加在卡片上而不是浮层内容上：浮层内容要留给 Vuetify
+                     定位，它自己带 zoom 会连 top/left 一起缩放，菜单位置会算飞 -->
+                <v-card border :style="pickerZoomStyle">
                   <v-date-picker
                     :model-value="currentDateObj"
                     color="primary"
@@ -178,6 +182,7 @@
     :min="zoomMin"
     :max="zoomMax"
     @update:value="setEditorZoom"
+    @steal-focus="restoreEditorFocus"
   />
 </template>
 
@@ -456,6 +461,10 @@ export default {
         // 测量前藏住面板；animation 一起跑就交还给 WAAPI
         opacity: this.morphHidden ? 0 : 1,
       }
+    },
+    // 日期选择器在 body 的浮层里，和对话框是两个子树，缩放各算各的
+    pickerZoomStyle() {
+      return { zoom: `${this.editorZoom}%` }
     },
     // 对话框能占的最大宽度。要按实际缩放折算，不能直接写视口能让出的那份：
     // max-width 是在「排版尺寸」这一层卡的（内容永远按 700 排、之后才被 zoom 整体缩），
@@ -1308,12 +1317,16 @@ export default {
       setSetting('editor.zoom', zoom)
       this.keepFocusDuringZoom()
     },
-    // 调缩放不该把焦点从编辑框带走。缩放条在卡片外（teleport 到 body），
-    // 卡片上那个 holdFocus 管不到它：滑块按下去浏览器就把焦点挪到滑块上了。
-    // 这里松手之后把焦点还回去，光标位置原样不动。
-    // 不是每一下都要还：浏览器把焦点落到滑块上是异步的，所以松手后再看一小段
-    // （ZOOM_FOCUS_GUARD）。用户真去点别的控件时，那段窗口里已经在控件上了，
-    // 这里只认「焦点掉在缩放条、body 或者干脆没了」这几种，别的一概不动
+    // 焦点一掉进缩放条就立刻还给正文。滑块本身可聚焦（thumb 和 range input），
+    // 靠 mousedown.prevent + 松手后的定时兜底都不够干脆：前者拦不住内部的 focus()，
+    // 后者要等 600ms。focusin 是同步事件，在这里还焦点光标位置也不会动
+    restoreEditorFocus() {
+      if (!this.dialogVisible) return
+      this.$refs.editorRef?.focus?.({ preventScroll: true })
+    },
+    // 兜底：焦点没触发 focusin 而是掉到 body（或从缩放条上被 blur），
+    // 松手后再看一眼，还落在这些地方才把焦点还给编辑器。
+    // 用户真去点别的控件时，那段窗口里已经在控件上了，这里不动
     keepFocusDuringZoom() {
       if (!this.dialogVisible) return
       const restore = () => {

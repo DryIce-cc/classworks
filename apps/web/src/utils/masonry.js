@@ -9,7 +9,7 @@
 // 搜索：卡片按科目顺序逐张放，beam 搜每张卡放进哪一列、跨几列。
 // 不搜索的话，一路往当前最矮的列垒，长卡很容易被挤到最后一列顶成一根柱子。
 // 目标是「最高的那一列尽量矮」；跨列省下的高度再按系数抵扣（长文本跨列好读）。
-// 分数相同时更靠左、更少留洞的排法胜出，也就自然贴近科目顺序。
+// 分数完全相同时再按科目顺序（从上到下、从左往右）取舍。
 
 export const COLUMN_GAP = 10
 export const ROW_GAP = 11
@@ -310,18 +310,9 @@ function finalize(state, ctx) {
   }
 }
 
-// 同样总高时优先科目顺序：
-//   1. 相邻科目尽量留在同一列（相邻两科上下排，而不是散到各列）；
-//   2. 再按“从上到下、从左往右”的阅读顺序，逆序对越少越好。
+// 科目顺序指标：逆序对。按“从上到下、从左往右”读出卡片，科目序号必须递增。
 // 跨列卡只按起始列算，它本来就会盖住下一列
 function orderRank(layout) {
-  const n = layout.placements.length
-  const colOf = new Array(n)
-  for (const p of layout.placements) colOf[p.index] = p.col
-  let sameColumn = 0
-  for (let i = 0; i + 1 < n; i++) {
-    if (colOf[i] === colOf[i + 1]) sameColumn++
-  }
   const sorted = layout.placements.slice().sort(function (a, b) {
     return a.y - b.y || a.col - b.col
   })
@@ -331,7 +322,7 @@ function orderRank(layout) {
       if (sorted[i].index > sorted[j].index) inversions++
     }
   }
-  return [-sameColumn, inversions]
+  return inversions
 }
 
 // 兜底候选：LPT 贪心——高的卡先放，每次都塞进当前最矮的列。
@@ -442,14 +433,15 @@ export function buildMasonryLayout(options) {
     states = dedupeAndSort(next)
   }
 
-  // 验收：先看「总高 - 跨列资格分 × 权重」，同分再比列高差。
-  // 资格分高的卡（英语）值得为它多付半张卡的高度，刚好填满两列的卡（语文）不值
+  // 验收：总高最矮第一，科目顺序第二。
+  // 最高列矮才算紧凑，所以先比「总高 - 跨列资格分 × 权重」；分数一样高时
+  // （两列互换后高度没变）才按逆序对取舍，让靠前的科目尽量靠上、靠左。
+  // 跨列奖励保留：资格分高的卡（英语）值得为它多付半张卡的高度，
+  // 刚好填满两列的卡（语文）不值。后面两项只在完全同分时避免明显留洞/失衡
   function rank(layout) {
-    const [sameColumn, inversions] = orderRank(layout)
     return [
       Math.round(layout.max - SPAN_GAIN_WEIGHT * layout.gain),
-      sameColumn,
-      inversions,
+      orderRank(layout),
       layout.range > MAX_SPAN_HOLE ? 1 : 0,
       layout.range,
     ]

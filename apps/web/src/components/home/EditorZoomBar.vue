@@ -15,6 +15,7 @@
         @mousedown.prevent
         @touchstart.prevent
         @contextmenu.prevent
+        @focusin="releaseFocus"
       >
         <span class="editor-zoom-value">编辑框缩放 {{ value }}%</span>
         <v-slider
@@ -50,7 +51,7 @@ export default {
       default: 100,
     },
   },
-  emits: ['update:value'],
+  emits: ['update:value', 'steal-focus'],
   computed: {
     sliderValue: {
       get() {
@@ -59,6 +60,15 @@ export default {
       set(next) {
         this.$emit('update:value', next)
       },
+    },
+  },
+  methods: {
+    // 滑块（含拇指和 range input）天生可聚焦，指针按下去浏览器就会把焦点从正文
+    // 挪过来。卡片外的 mousedown.prevent 管不住 Vuetify 内部显式 focus 的那一下，
+    // 所以焦点一进来就报给父级，由它当场还给编辑器——比「松手后等 600ms 再兜底」
+    // 更确定，也不会在拖动过程中让正文的光标断掉
+    releaseFocus() {
+      this.$emit('steal-focus')
     },
   },
 }
@@ -80,10 +90,17 @@ export default {
   z-index: 2600;
   display: flex;
   align-items: center;
-  gap: 14px;
+  /* 文字和滑轨贴紧一点，腾出来的横向空间留给滑块 */
+  gap: 8px;
   /* 定宽：百分比位数变化时滑轨不跟着伸缩 */
   width: 180px;
   box-sizing: border-box;
+}
+
+/* 拖动时手柄每帧都改 inset-inline-start，Vuetify 默认那 0.3s 过渡会让它
+   慢半拍追着指针走；这里直接去掉，只留按压/光圈自己那套过渡 */
+.editor-zoom-slider :deep(.v-slider-thumb) {
+  transition: none;
 }
 
 /* 定宽 + 等宽数字，70% 和 100% 切换时右侧滑轨纹丝不动 */
