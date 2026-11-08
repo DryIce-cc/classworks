@@ -316,7 +316,6 @@ export default {
 /* 量词那一排。六个键对不上三列，所以自己一行、均分整行，
    硬凑进上面那个网格只会让键宽一会儿宽一会儿窄 */
 .measure-row {
-  margin: 0 15px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--key-gap);
@@ -329,10 +328,11 @@ export default {
 .measure-btn {
   width: 100%;
   min-width: 0;
-  min-height: 3px;
-  padding: 0 2px;
+  /* 四个量词均分整条键位栏；比数字键再高一点，点起来不费劲 */
+  height: 40px;
+  min-height: 40px;
+  padding: 0 4px;
   font-size: 0.8rem;
-  /* 六个键挤在一行，字一折行这一排就白高了 */
   white-space: nowrap;
 }
 </style>

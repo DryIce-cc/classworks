@@ -374,7 +374,7 @@ function toggleHeadingAt(view, index) {
     // 「贴着前一个字符」映射过去——光标就留在 # 前面了，接着打的字全插到
     // # 前面去：# 从此不再是行首记号，这一行也就不再是小标题（还会顺手
     // 被当成一条新作业补上编号）
-    selection: EditorSelection.cursor(from + num + 1),
+    selection: EditorSelection.cursor(from + 1),
   })
 }
 
@@ -733,20 +733,23 @@ function pasteText(text) {
   // 不是另起一个小节，见 smartPaste 的 before）；头一行是编号的，那是另一条作业，
   // 得另起一行，不然会跟这一行挤成一行
   const line = view.state.doc.lineAt(sel.head)
+  const body = bodyOf(line.text)
+  const marker = markerLen(line.text)
+  // 行首（正文起点）粘到非空行：照剪贴板原样插，不做智能整理。
+  // 这里的「非空」看的是正文，光杆编号「3. 」仍算空行
+  const atNonEmptyHead = sel.empty && sel.head === line.from + marker && body.trim() !== ''
   const appending = sel.empty && sel.head === line.to
-  const before = appending ? bodyOf(line.text).trim() : ''
+  const before = appending ? body.trim() : ''
   // 这一行光杆挂着个编号（「3. 」）：追加上去的东西会接在号后面
-  const numbered = appending && numberLen(line.text) > 0
-  const next = smartPaste(text, before)
+  const numbered = appending && marker > 0
+  // 行首原样插入只做换行符归一，别的整理一概不做
+  const next = atNonEmptyHead ? String(text).replace(/\r\n?/g, '\n') : smartPaste(text, before)
   let insert = next
   if (appending) {
-    const startsItem = /^\d+\.(?=[ 　]|$)/.test(next)
     // 追加到已有正文、或光杆编号后面：头一行只是接着这一行往下写，
     // 剪贴板自带的 # 一并摘掉——留着的话它会落在这一行中间，行首不是 #，
     // 装饰也就藏不住它了（这正是「首行的 # 出现在正文里」的原因）
     if (before || numbered) insert = next.replace(/^#[ \t　]?/, '')
-    // 头一行是编号（或这一行本来就只是个光杆编号）：另起一行，别跟这一行挤成一行
-    if (startsItem || (!before && numbered)) insert = '\n' + insert
   }
   view.dispatch({
     // replaceSelection 给的是一整份事务说明（changes + selection），得摊开铺进来。
