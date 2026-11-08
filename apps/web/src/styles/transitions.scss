@@ -9,6 +9,15 @@
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
   --ease-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+  // 编辑面板专用：展开接近 slow，收起比展开再快一点；
+  // 曲线用常见的缓出/缓入，不再用前段冲得太快的 standard
+  --motion-dialog-open: 280ms;
+  --motion-dialog-close: 200ms;
+  --ease-dialog-open: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-dialog-close: cubic-bezier(0.4, 0, 1, 1);
+  --motion-dialog-content-in: 140ms;
+  --motion-dialog-content-delay: 140ms;
+  --motion-dialog-content-out: 100ms;
 }
 
 // ===== 作业卡片（首页瀑布流）=====
@@ -67,49 +76,41 @@
 }
 
 // ===== 编辑面板 =====
-// 从点下去的那张卡片的位置长出来。位置和倍率由组件按卡片矩形算好
-// （见 HomeworkEditDialog.vue 的 dialogFrom），这里只负责把它接进 Vuetify 自带的
-// dialog-transition。终点保持 none，缩放和位移一起收回去。
-//
-// 字不跟着缩：整块按 0.2–0.9 倍缩放时，里面的文字必然糊成一片。所以缩放期间只露
-// 面板的底色和描边（.hw-card 自己），里面的内容延迟淡入——等长到接近原尺寸才见字，
-// 看到的是「卡片展开成面板」，而不是一张放大的截图。
+// macOS 经典缩放：面板从卡片矩形非等比拉到最终尺寸，收起时缩回卡片。
+// 几何由组件用 WAAPI 驱动（HomeworkEditDialog.vue 的 startOpenMorph /
+// playCloseMorph），这里只控制文字：缩放期间只露底色和描边，
+// 等形状基本到位再淡入，看到的是「卡片展开成面板」，而不是一张放大的截图。
 @media (prefers-reduced-motion: no-preference) {
-  .v-overlay__content.dialog-transition-enter-from,
-  .v-overlay__content.dialog-transition-leave-to {
-    opacity: 0;
-    transform: translate(var(--dialog-from-x, 0px), var(--dialog-from-y, 0px))
-      scale(var(--dialog-from-scale, 0.9));
+  // 背景压暗跟着面板同一条曲线走，别在面板还没长开时就把背景切黑
+  .homework-dialog .v-overlay__scrim.fade-transition-enter-active {
+    transition: opacity var(--motion-dialog-open) var(--ease-dialog-open) !important;
   }
 
-  .v-overlay__content.dialog-transition-enter-to,
-  .v-overlay__content.dialog-transition-leave-from {
-    opacity: 1;
-    transform: none;
+  .homework-dialog .v-overlay__scrim.fade-transition-leave-active {
+    transition: opacity var(--motion-dialog-close) var(--ease-dialog-close) !important;
   }
 
-  // Vuetify 那几条时长带 !important，这里要盖过去也得带。
-  // 几何用标准缓出：前段不至于一下子冲到终点，才看得出是从卡片长出来的
-  .v-overlay__content.dialog-transition-enter-active {
-    transition:
-      transform var(--motion-slow) var(--ease-standard),
-      opacity 100ms linear !important;
+  // 文字等形状基本到位再淡入，收起时先淡出；缩放期间只露底色和描边
+  .homework-dialog-content.hw-dialog-morphing .hw-card > * {
+    animation: dialog-content-in var(--motion-dialog-content-in) var(--ease-standard)
+      var(--motion-dialog-content-delay) both;
   }
 
-  .v-overlay__content.dialog-transition-enter-active .hw-card > * {
-    animation: dialog-content-in var(--motion-base) var(--ease-standard) 90ms both;
+  .homework-dialog-content.hw-dialog-closing .hw-card > * {
+    animation: dialog-content-out var(--motion-dialog-content-out) var(--ease-accelerate) both;
   }
+}
 
-  // 关的时候反过来：字先退，底板缩回卡片
-  .v-overlay__content.dialog-transition-leave-active {
-    transition:
-      transform 200ms var(--ease-accelerate),
-      opacity 110ms linear 70ms !important;
-  }
+// 关闭后遮罩还要淡出 360ms，但不能再挡着下面的卡片——否则这半秒内点不开别的。
+// 浮层一退出 active 就让开点击；重新打开时 active 类回来，点击范围自然恢复
+.homework-dialog:not(.v-overlay--active) .v-overlay__scrim {
+  pointer-events: none;
+}
 
-  .v-overlay__content.dialog-transition-leave-active .hw-card > * {
-    animation: dialog-content-out 80ms var(--ease-accelerate) both;
-  }
+// 关闭末尾整块内容用 visibility 藏起来时，.vis-fade 自己的 visibility 过渡
+// 会让小键盘上那两个键（P / 第）多留一瞬。关闭期间直接关掉这段过渡
+.homework-dialog-content.hw-dialog-closing .vis-fade {
+  transition: none !important;
 }
 
 @keyframes dialog-content-in {

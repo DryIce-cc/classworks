@@ -4,6 +4,10 @@
        「遮罩上拖过就不算点击」），面板关不关还归按下抬起那套手势管 -->
   <v-dialog
     v-model="dialogVisible"
+    class="homework-dialog"
+    :transition="false"
+    eager
+    no-click-animation
     :fullscreen="false"
     :width="dialogBaseWidth"
     :max-width="dialogMaxWidth"
@@ -326,9 +330,8 @@ export default {
   emits: ['update:modelValue', 'save', 'preview'],
   data() {
     return {
-      // 关面板那一刻现量的卡片位置。卡片可能已经随瀑布流挪过位，
-      // 比打开时记下的那份准
-      closeFrom: null,
+      // 打开动画测量前先把面板藏住，避免露出「最终尺寸」那一帧
+      morphHidden: false,
       // 日期 -> 正文。翻到别的日期再翻回来时，这一天的改动还在，
       // 关闭时一次性把所有改动过的日期写回去
       drafts: {},
@@ -421,11 +424,6 @@ export default {
     this.stopHoldRepeat()
   },
   computed: {
-    // 面板该从哪儿长出来：关的时候现量的优先，其次是点开时记下的那张卡片。
-    // 换算成 translate 与 scale 交给 transitions.scss 里的 dialog-transition 覆盖
-    dialogFrom() {
-      return this.closeFrom || this.computeFromRect(this.origin)
-    },
     // 对话框的原始宽度。缩放不再改它——改宽度只是横向压扁：正文重新折行、
     // 卡片反而更高；右边那列键位是 fixed 的，不跟着缩，挤进窄卡片里就跟推荐面板叠上了。
     // 缩放现在交给下面那条 zoom 整体缩，这里只把基准宽度交给 v-dialog
@@ -437,13 +435,13 @@ export default {
     // 一点没变，只是画小了，内容仍旧按原尺寸排版，缩出来的空白也还落在对话框盒子里。
     // 用 zoom 缩下去以后，围着内容的那圈空白是真的在对话框盒子外面，
     // 点它是一个正常的「点外面」，面板照常关掉（见 handlePressEnd）
+    // 面板的基准缩放。开/关的位移与非等比缩放由 WAAPI 直接驱动，
+    // 见 startOpenMorph / playCloseMorph
     dialogZoomStyle() {
-      const from = this.dialogFrom
       return {
         zoom: `${this.editorZoom}%`,
-        '--dialog-from-x': `${from ? from.x : 0}px`,
-        '--dialog-from-y': `${from ? from.y : 0}px`,
-        '--dialog-from-scale': from ? from.scale : 0.9,
+        // 测量前藏住面板；animation 一起跑就交还给 WAAPI
+        opacity: this.morphHidden ? 0 : 1,
       }
     },
     // 对话框能占的最大宽度。要按实际缩放折算，不能直接写视口能让出的那份：
@@ -621,8 +619,8 @@ export default {
     async modelValue(newValue) {
       if (newValue) {
         // 新开一次，上一回关面板时量的位置作废
-        this.closeFrom = null
         this._closing = false
+        this.morphHidden = true
         this.drafts = {}
         this.initialDrafts = {}
         // 上一次编辑读过的存档作废：这段时间里存档可能已经被写过了
@@ -631,27 +629,78 @@ export default {
         this.startCloseCountdown()
         await this.loadContent(this.startDate)
         this.focusAndSync()
+        // 等正文读进来、高度定下来再量面板；否则高卡片会按加载中的高度
+        // 算出偏大的落点，长开之后才发现真实高度更矮，看起来就是先过高再变矮
+        this.$nextTick(this.startOpenMorph)
       } else {
         this.stopCloseCountdown()
       }
     },
   },
   methods: {
-    // 卡片矩形 -> 过渡用的位移与缩放。位移按「卡片中心 - 视口中心」算：
-    // 面板是 flex 居中的，中心就在视口中心，translate 过去正好落在卡片上。
-    // 元素带 zoom，translate 会被 zoom 一起缩，所以要除回去
-    computeFromRect(rect) {
-      if (!rect) return null
+    // 一次开/关动画的起点：卡片矩形相对面板最终矩形要位移多少、宽高各自
+    // 非等比缩到多少。面板带 zoom，translate 会被 zoom 一起缩，所以要除回去
+    measureMorph(cardRect, dialogRect) {
+      if (!cardRect || !dialogRect) return null
+      if (!cardRect.width || !cardRect.height || !dialogRect.width || !dialogRect.height) return null
       const zoom = this.editorZoom / 100
-      const width = Math.min(DIALOG_BASE_WIDTH * zoom, window.innerWidth - 48)
-      if (!width || !rect.width) return null
       return {
-        x: (rect.x + rect.width / 2 - window.innerWidth / 2) / zoom,
-        y: (rect.y + rect.height / 2 - window.innerHeight / 2) / zoom,
-        // 起手是卡片那么大，长到面板大小；太小的卡片别缩成一个点。
-        // 缩放只作用在面板底色上，里面的字另有节奏（见 transitions.scss）
-        scale: Math.min(0.92, Math.max(0.2, rect.width / width)),
+        x: (cardRect.x + cardRect.width / 2 - (dialogRect.x + dialogRect.width / 2)) / zoom,
+        y: (cardRect.y + cardRect.height / 2 - (dialogRect.y + dialogRect.height / 2)) / zoom,
+        // 宽高各缩各的，形状才真的从卡片矩形长成面板矩形；太小的卡片别缩成一个点
+        sx: Math.max(0.12, cardRect.width / dialogRect.width),
+        sy: Math.max(0.12, cardRect.height / dialogRect.height),
       }
+    },
+    // 面板最终位置的矩形。此刻还没挂任何动画，直接量卡片
+    measureDialogRect() {
+      const card = document.querySelector('.homework-dialog-content .hw-card')
+      return card ? card.getBoundingClientRect() : null
+    },
+    // 打开：量出面板最终矩形，然后用 WAAPI 把它从卡片矩形非等比拉到原位。
+    // 不能靠 Vuetify 的 dialog-transition：它在挂载那一刻就按默认 scale(.9)
+    // 起跑，之后再写 CSS 变量已经改不了它的起点。
+    async startOpenMorph() {
+      await this.$nextTick()
+      const content = document.querySelector('.homework-dialog-content')
+      if (!content) return
+      // 同一帧内先藏住，量完再交给动画，避免露出最终尺寸的那一帧
+      content.style.opacity = '0'
+      const cardRect = this.origin || this.findCardRect(this.title)
+      const dialogRect = this.measureDialogRect()
+      const morph = this.measureMorph(cardRect, dialogRect)
+      if (!morph) {
+        this.morphHidden = false
+        content.style.opacity = ''
+        content.style.visibility = ''
+        return
+      }
+      content.classList.add('hw-dialog-morphing')
+      const root = getComputedStyle(document.documentElement)
+      const duration = parseFloat(root.getPropertyValue('--motion-dialog-open')) || 520
+      const easing =
+        root.getPropertyValue('--ease-dialog-open').trim() ||
+        'cubic-bezier(0.4, 0, 0.2, 1)'
+      // 临时取消渐显：只留几何，方便观察缩放过程；恢复时把 opacity 两帧加回来
+      const anim = content.animate(
+        [
+          { transform: `translate(${morph.x}px, ${morph.y}px) scale(${morph.sx}, ${morph.sy})` },
+          { transform: 'none' },
+        ],
+        { duration, easing, fill: 'both' },
+      )
+      this.morphHidden = false
+      content.style.opacity = ''
+      content.style.visibility = ''
+      this._openAnim = anim
+      anim.finished
+        .then(() => {
+          // 收掉 fill，别把结束状态一直留在元素上；下次量尺寸时才是干净的
+          anim.cancel()
+          if (this._openAnim === anim) this._openAnim = null
+          content.classList.remove('hw-dialog-morphing')
+        })
+        .catch(() => {})
     },
     // 关面板时卡片可能已经被瀑布流挪走、或者从「添加」卡变成了正式卡片，
     // 按 key 现找一次
@@ -920,6 +969,56 @@ export default {
     getEditor() {
       return this.$refs.editorRef || null
     },
+    // 关闭：先退字，再把面板缩回卡片。等几何真的到位才让 v-dialog 卸载，
+    // 否则关掉 transition 之后会瞬间消失
+    async playCloseMorph() {
+      const content = document.querySelector('.homework-dialog-content')
+      const cardRect = this.findCardRect(this.title)
+      if (!content || !cardRect) {
+        this.dialogVisible = false
+        return
+      }
+      if (this._openAnim) {
+        this._openAnim.cancel()
+        this._openAnim = null
+      }
+      content.classList.remove('hw-dialog-morphing')
+      const morph = this.measureMorph(cardRect, this.measureDialogRect())
+      if (!morph) {
+        this.dialogVisible = false
+        return
+      }
+      content.classList.add('hw-dialog-closing')
+      const root = getComputedStyle(document.documentElement)
+      const duration = parseFloat(root.getPropertyValue('--motion-dialog-close')) || 360
+      const easing =
+        root.getPropertyValue('--ease-dialog-close').trim() || 'cubic-bezier(0.4, 0, 1, 1)'
+      // 临时取消渐隐：只留几何，恢复时把 opacity 两帧加回来
+      const anim = content.animate(
+        [
+          { transform: 'none' },
+          { transform: `translate(${morph.x}px, ${morph.y}px) scale(${morph.sx}, ${morph.sy})` },
+        ],
+        { duration, easing, fill: 'both' },
+      )
+      // 背景和面板同步退：别等面板缩完才让遮罩开始淡
+      const scrim = document.querySelector('.homework-dialog .v-overlay__scrim')
+      if (scrim) {
+        scrim.animate([{ opacity: getComputedStyle(scrim).opacity }, { opacity: 0 }], {
+          duration,
+          easing,
+          fill: 'both',
+        })
+      }
+      await anim.finished.catch(() => {})
+      // 先藏住内容，再收动画。cancel 会让它弹回居中的大图，而 v-show 要等下一帧
+      // 才生效，中间就闪出来了。用 visibility 是因为它不会被 style 绑定的 opacity 覆盖
+      content.style.visibility = 'hidden'
+      this.dialogVisible = false
+      await this.$nextTick()
+      anim.cancel()
+      content.classList.remove('hw-dialog-closing')
+    },
     // 关闭时把所有改动过的日期一起交回去，不只是当前看得见的那天。
     // 完成编辑这一刻顺便把正文里的「预定」标记落实掉：标记行以下的内容
     // 搬到那一天去，标记行本身不留，被搬进去的那几天也要一并交回去写盘
@@ -928,8 +1027,6 @@ export default {
       if (this._closing) return
       this._closing = true
       try {
-        // 关的时候现量一次卡片位置，缩回去的落点是它此刻待的地方
-        this.closeFrom = this.computeFromRect(this.findCardRect(this.title))
         // 面板要关了，先把还在跑的连删停掉：按钮马上就没了，
         // 停不下来会一路删到面板关完为止
         this.stopHoldRepeat()
@@ -939,7 +1036,8 @@ export default {
         await this.settleReservations()
         const entries = this.changedDrafts()
         if (entries.length) this.$emit('save', entries)
-        this.dialogVisible = false
+        // 缩回去的落点是卡片此刻待的地方；playCloseMorph 会等几何到位再卸载
+        await this.playCloseMorph()
       } finally {
         this._closing = false
       }
