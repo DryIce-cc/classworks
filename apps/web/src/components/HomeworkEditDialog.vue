@@ -161,7 +161,7 @@
          压在对话框正下方、水平居中，只用排版和字色区分层级，不加底衬。
          绝对定位挂在对话框内容容器上（那个容器 position: absolute），
          top:100% 正好落在卡片下面；pointer-events:none 让它不挡点击 -->
-    <div class="dialog-slogan">
+    <div class="dialog-slogan" :class="{ 'dialog-slogan-on': sloganVisible }">
       <span>点击任意位置完成编辑</span>
       <span class="dialog-slogan-keys">Esc / Ctrl+S </span>
     </div>
@@ -173,7 +173,7 @@
        position: fixed 在那样的祖先里会退化成 absolute，跟着卡片一起缩。
        数值记在应用设置里（editor.zoom），下回打开还是这个大小 -->
   <editor-zoom-bar
-    :visible="dialogVisible"
+    :visible="zoomBarVisible"
     :value="editorZoom"
     :min="zoomMin"
     :max="zoomMax"
@@ -241,6 +241,10 @@ const INTERACTIVE_SELECTOR =
 // 所以上面那份名单扫不到它，扫到了也不会关面板——见 nearInteractive 的注释。
 // 它身上也没有 button / role=button，滑块拇指是 role=slider，照样落不到那份名单里
 const ZOOM_BAR_SELECTOR = '.editor-zoom'
+
+// 拖动过程中把焦点还给编辑框用的窗口：松手后最多再看这么久，
+// 躲开浏览器把焦点落到滑块上的那一下（见 keepFocusDuringZoom）
+const ZOOM_FOCUS_GUARD = 600
 // 长按按钮弹出来的那套右键菜单，在触屏上是纯添乱：弹出来占半屏，
 // 松手的时候还会顺手把按着的那个按钮触发一下。按钮上的右键菜单一律掐掉，
 // 实现改在模板上：整块键位（.quick-tools）和缩放条各挂一个 @contextmenu.prevent，
@@ -332,6 +336,14 @@ export default {
     return {
       // 打开动画测量前先把面板藏住，避免露出「最终尺寸」那一帧
       morphHidden: false,
+      // 缩放条自己的显隐。不跟 dialogVisible 走：关闭动画有 200ms，
+      // 那期间面板在缩、缩放条却还挂在右下角，会明显晚一拍才消失
+      zoomBarVisible: false,
+      // 「点击任意位置完成编辑」那句。等展开动画走完再单独淡进来，
+      // 关闭时单独淡出去——它不跟着对话框的几何动画一起跑
+      sloganVisible: false,
+      // 打开时把焦点放到正文末尾这件事，等展开动画收尾再做（见 focusIfPending）
+      pendingCaretToEnd: false,
       // 日期 -> 正文。翻到别的日期再翻回来时，这一天的改动还在，
       // 关闭时一次性把所有改动过的日期写回去
       drafts: {},
@@ -410,6 +422,7 @@ export default {
   },
   beforeUnmount() {
     this.stopHoldRepeat()
+    window.clearTimeout(this._zoomFocusTimer)
     document.removeEventListener('pointerdown', this.handlePressStart, true)
     document.removeEventListener('pointerup', this.handlePressEnd, true)
     document.removeEventListener('pointercancel', this.cancelPress, true)
@@ -621,6 +634,8 @@ export default {
         // 新开一次，上一回关面板时量的位置作废
         this._closing = false
         this.morphHidden = true
+        this.zoomBarVisible = false
+        this.sloganVisible = false
         this.drafts = {}
         this.initialDrafts = {}
         // 上一次编辑读过的存档作废：这段时间里存档可能已经被写过了
@@ -628,6 +643,10 @@ export default {
         // 从面板出现那一刻开始算，读存档的耗时也算在这段倒计里
         this.startCloseCountdown()
         await this.loadContent(this.startDate)
+        // 先抢一次焦点：Vuetify 的焦点陷阱随后会把焦点落到内容容器上，晚了就抢不回来。
+        // 但这时候正文几何还会被展开动画搅动、重测量可能把光标甩走，所以真正落位
+        // 放到动画收尾再做（见 focusIfPending）。动画结束前也不挡打字
+        this.pendingCaretToEnd = true
         this.focusAndSync()
         // 等正文读进来、高度定下来再量面板；否则高卡片会按加载中的高度
         // 算出偏大的落点，长开之后才发现真实高度更矮，看起来就是先过高再变矮
@@ -660,10 +679,37 @@ export default {
     // 打开：量出面板最终矩形，然后用 WAAPI 把它从卡片矩形非等比拉到原位。
     // 不能靠 Vuetify 的 dialog-transition：它在挂载那一刻就按默认 scale(.9)
     // 起跑，之后再写 CSS 变量已经改不了它的起点。
+    // 等浮层真的挂上再用：v-dialog 自己是过渡进场的（.v-overlay--active 之前
+    // 那层还在 transform: scale(.9) 的阶段），这时候量出来的矩形是缩过的，
+    // 起跑点会偏；没挂上的话内容容器也还不在文档里
+    async waitDialogOverlay() {
+      for (let i = 0; i < 20; i++) {
+        if (document.querySelector('.homework-dialog-content .hw-card')) return true
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+      }
+      return false
+    },
     async startOpenMorph() {
+      if (!(await this.waitDialogOverlay())) {
+        this.morphHidden = false
+        if (this.dialogVisible) {
+          this.zoomBarVisible = true
+          this.sloganVisible = true
+        }
+        this.focusIfPending()
+        return
+      }
       await this.$nextTick()
       const content = document.querySelector('.homework-dialog-content')
-      if (!content) return
+      if (!content) {
+        this.morphHidden = false
+        if (this.dialogVisible) {
+          this.zoomBarVisible = true
+          this.sloganVisible = true
+        }
+        this.focusIfPending()
+        return
+      }
       // 同一帧内先藏住，量完再交给动画，避免露出最终尺寸的那一帧
       content.style.opacity = '0'
       const cardRect = this.origin || this.findCardRect(this.title)
@@ -673,6 +719,11 @@ export default {
         this.morphHidden = false
         content.style.opacity = ''
         content.style.visibility = ''
+        if (this.dialogVisible) {
+          this.zoomBarVisible = true
+          this.sloganVisible = true
+        }
+        this.focusIfPending()
         return
       }
       content.classList.add('hw-dialog-morphing')
@@ -699,6 +750,12 @@ export default {
           anim.cancel()
           if (this._openAnim === anim) this._openAnim = null
           content.classList.remove('hw-dialog-morphing')
+          // 面板长开了再把缩放条淡进来：它不参与缩放，提前出现会显得突兀
+          if (this.dialogVisible) this.zoomBarVisible = true
+          // 提示等面板落定再淡进来，别和展开动画挤在一起
+          if (this.dialogVisible) this.sloganVisible = true
+          // 动画走完再聚焦：此时几何不再变，末尾这个位置落得住
+          this.focusIfPending()
         })
         .catch(() => {})
     },
@@ -832,6 +889,19 @@ export default {
     async switchDate(dateString) {
       await this.settleReservations()
       await this.loadContent(dateString)
+      this.focusAndSync()
+    },
+    // 打开动画收尾才轮到聚焦（见 startOpenMorph）。缩放期间已经翻过日期、
+    // 或者已经关掉了，就不用再补这一下了
+    focusIfPending() {
+      if (!this.pendingCaretToEnd) return
+      this.pendingCaretToEnd = false
+      if (!this.dialogVisible) return
+      // 动画这 300ms 里用户已经点进正文/某个控件自己找位置了，就别再把光标拽到末尾。
+      // 只认真正可编辑、可操作的元素：Vuetify 的焦点陷阱会把焦点落到内容容器
+      // （.v-overlay__content）上，那不是用户动过手
+      const active = document.activeElement
+      if (active && active !== document.body && active.closest?.(FOCUS_KEEP_SELECTOR)) return
       this.focusAndSync()
     },
     // 输入框重新可用了才能定位光标，所以聚焦要等一拍。
@@ -988,6 +1058,11 @@ export default {
         this.dialogVisible = false
         return
       }
+      // 缩放条先退：它钉在视口右下角，不参与面板缩放，
+      // 留着就会在面板已经缩完、卸载之前的这段时间里多待一截
+      this.zoomBarVisible = false
+      // 提示自己淡出，不挂在内容容器的几何动画上
+      this.sloganVisible = false
       content.classList.add('hw-dialog-closing')
       const root = getComputedStyle(document.documentElement)
       const duration = parseFloat(root.getPropertyValue('--motion-dialog-close')) || 360
@@ -1231,6 +1306,26 @@ export default {
       const zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(value) || 100))
       this.editorZoom = zoom
       setSetting('editor.zoom', zoom)
+      this.keepFocusDuringZoom()
+    },
+    // 调缩放不该把焦点从编辑框带走。缩放条在卡片外（teleport 到 body），
+    // 卡片上那个 holdFocus 管不到它：滑块按下去浏览器就把焦点挪到滑块上了。
+    // 这里松手之后把焦点还回去，光标位置原样不动。
+    // 不是每一下都要还：浏览器把焦点落到滑块上是异步的，所以松手后再看一小段
+    // （ZOOM_FOCUS_GUARD）。用户真去点别的控件时，那段窗口里已经在控件上了，
+    // 这里只认「焦点掉在缩放条、body 或者干脆没了」这几种，别的一概不动
+    keepFocusDuringZoom() {
+      if (!this.dialogVisible) return
+      const restore = () => {
+        if (!this.dialogVisible) return
+        const active = document.activeElement
+        const lost = !active || active === document.body || !!active.closest?.(ZOOM_BAR_SELECTOR)
+        if (!lost) return
+        this.$refs.editorRef?.focus?.({ preventScroll: true })
+      }
+      this.$nextTick(restore)
+      window.clearTimeout(this._zoomFocusTimer)
+      this._zoomFocusTimer = window.setTimeout(restore, ZOOM_FOCUS_GUARD)
     },
     // 选中的多行，整行范围是 { start, end }；没选、或者只选了一行，都返回 null。
     // 只选一行不算多选——单行的走原来那套（#+单行直接改那个 #）
@@ -1809,6 +1904,18 @@ export default {
   color: rgba(255, 255, 255, 0.56);
   /* 字压在卡片上时也读得清；比原来的整块黑色虚影轻得多 */
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+
+  /* 它有自己的节奏：面板展开/收起时不露面，等动画结束才淡进来，
+     关的时候先它自己淡出去。别挂到内容的几何动画上。
+     进场的延迟和时长都比通用淡入长一截——它是句「提示」，慢慢浮出来
+     才不抢面板落定那一下的注意力（见 transitions.scss 的 --motion-slogan-*） */
+  opacity: 0;
+  transition: opacity var(--motion-slogan-out) var(--ease-accelerate);
+}
+
+.dialog-slogan-on {
+  opacity: 1;
+  transition: opacity var(--motion-slogan-in) var(--ease-standard) var(--motion-slogan-delay);
 }
 
 .dialog-slogan-keys {

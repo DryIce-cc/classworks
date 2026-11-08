@@ -477,6 +477,47 @@ export function buildMasonryLayout(options) {
   return best
 }
 
+// 卡片比视口列数少时改用这一版：每张卡宽 = max(自然宽, 视口列宽)，
+// 一行左对齐，不再把卡片拉宽去撑满整行。
+// widths 是每张卡的目标宽度，heights 是各自在该宽度下量到的高度。
+export function buildRowLayout(options) {
+  const { widths, heights, W, gap = COLUMN_GAP } = options
+  const n = widths.length
+  if (!n) return null
+  let x = 0
+  const columns = []
+  const placements = []
+  let max = 0
+  for (let i = 0; i < n; i++) {
+    const height = heights[i]
+    columns.push({ width: widths[i], x: x, height: height })
+    placements.push({
+      index: i,
+      col: i,
+      span: 1,
+      y: 0,
+      height: height,
+      naturalHeight: height,
+      bottom: height,
+    })
+    if (height > max) max = height
+    x += widths[i] + gap
+  }
+  return {
+    columnCount: n,
+    columns: columns,
+    placements: placements,
+    gap: gap,
+    W: W,
+    max: max,
+    min: max,
+    range: 0,
+    waste: 0,
+    gain: 0,
+    spanCount: 0,
+  }
+}
+
 // allowSpan[k] 为真时就排在最后（越晚跨，越不容易在矮列上方留洞）
 function spanLateChain(ctx, k) {
   const { C, heights, rowGap } = ctx
@@ -542,20 +583,34 @@ export function measureCards(cardElements, W, options = {}) {
     // 同一帧里所有 clone 都是 max-content：一次布局就能量完全部自然宽
     for (const entry of entries) {
       if (!entry) continue
-      let naturalWidth = Math.min(W, entry.clone.offsetWidth)
+      // 向上取整：offsetWidth 是取整值，差半像素就会把最后一个字挤到下一行
+      let naturalWidth = Math.min(W, Math.ceil(entry.clone.getBoundingClientRect().width))
       if (!Number.isFinite(naturalWidth) || naturalWidth <= 0) naturalWidth = W
       entry.naturalWidth = Math.max(120, naturalWidth)
       for (const [node, original] of entry.nowrapNodes) node.style.whiteSpace = original
     }
 
-    for (let s = 1; s <= maxSpan; s++) {
-      const width = spanWidth(s, W, C, gap) + 'px'
-      for (const entry of entries) {
-        if (entry) entry.clone.style.width = width
+    // 各卡宽度不同时（少卡一行）按各自宽度量高
+    const widths = options.widths
+    if (widths) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]
+        if (entry) entry.clone.style.width = widths[i] + 'px'
       }
-      // 第一次 offsetHeight 触发一次布局，同一 s 下其余读数不再触发布局
-      for (const entry of entries) {
-        if (entry) entry.heights[s] = entry.clone.offsetHeight
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]
+        if (entry) entry.heights[1] = entry.clone.offsetHeight
+      }
+    } else {
+      for (let s = 1; s <= maxSpan; s++) {
+        const width = spanWidth(s, W, C, gap) + 'px'
+        for (const entry of entries) {
+          if (entry) entry.clone.style.width = width
+        }
+        // 第一次 offsetHeight 触发一次布局，同一 s 下其余读数不再触发布局
+        for (const entry of entries) {
+          if (entry) entry.heights[s] = entry.clone.offsetHeight
+        }
       }
     }
 
@@ -607,7 +662,8 @@ export async function measureCardsAsync(cardElements, W, options = {}, hooks = {
 
     for (const entry of entries) {
       if (!entry) continue
-      let naturalWidth = Math.min(W, entry.clone.offsetWidth)
+      // 向上取整：offsetWidth 是取整值，差半像素就会把最后一个字挤到下一行
+      let naturalWidth = Math.min(W, Math.ceil(entry.clone.getBoundingClientRect().width))
       if (!Number.isFinite(naturalWidth) || naturalWidth <= 0) naturalWidth = W
       entry.naturalWidth = Math.max(120, naturalWidth)
       for (const [node, original] of entry.nowrapNodes) node.style.whiteSpace = original
@@ -616,17 +672,30 @@ export async function measureCardsAsync(cardElements, W, options = {}, hooks = {
     await yieldToIdle()
     if (hooks.shouldCancel && hooks.shouldCancel()) return null
 
-    for (let s = 1; s <= maxSpan; s++) {
-      const width = spanWidth(s, W, C, gap) + 'px'
-      for (const entry of entries) {
-        if (entry) entry.clone.style.width = width
+    // 每张卡宽度不同时（居中一行），各自按自己的宽度量高
+    const widths = options.widths
+    if (widths) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]
+        if (entry) entry.clone.style.width = widths[i] + 'px'
       }
-      for (const entry of entries) {
-        if (entry) entry.heights[s] = entry.clone.offsetHeight
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]
+        if (entry) entry.heights[1] = entry.clone.offsetHeight
       }
-      if (s < maxSpan) {
-        await yieldToIdle()
-        if (hooks.shouldCancel && hooks.shouldCancel()) return null
+    } else {
+      for (let s = 1; s <= maxSpan; s++) {
+        const width = spanWidth(s, W, C, gap) + 'px'
+        for (const entry of entries) {
+          if (entry) entry.clone.style.width = width
+        }
+        for (const entry of entries) {
+          if (entry) entry.heights[s] = entry.clone.offsetHeight
+        }
+        if (s < maxSpan) {
+          await yieldToIdle()
+          if (hooks.shouldCancel && hooks.shouldCancel()) return null
+        }
       }
     }
 

@@ -6,22 +6,28 @@
        数值记在应用设置里（editor.zoom），下回打开还是这个大小 -->
   <Teleport to="body">
     <Transition name="fade">
-      <div v-if="visible" class="editor-zoom" title="编辑框缩放" @mousedown.prevent @contextmenu.prevent>
+      <!-- 焦点一律不许落进来：调缩放不该把光标从正文带走。
+           滑块本来是可聚焦的（role="slider"），这里从根上把它踢出 tab 序，
+           指针按下去浏览器也就挪不走焦点了（父级那条 keepFocusDuringZoom 兜底） -->
+      <div
+        v-if="visible"
+        class="editor-zoom"
+        @mousedown.prevent
+        @touchstart.prevent
+        @contextmenu.prevent
+      >
+        <span class="editor-zoom-value">编辑框缩放 {{ value }}%</span>
         <v-slider
-          :model-value="value"
-          :min="min"
-          :max="max"
-          :step="5"
+          v-model="sliderValue"
+          :min="50"
+          :max="100"
+          :step="10"
           density="compact"
           hide-details
+          tabindex="-1"
+          hide-spin-buttons
           class="editor-zoom-slider"
-          aria-label="编辑框缩放"
-          @update:model-value="$emit('update:value', $event)"
-        >
-          <template #label>
-            <span class="editor-zoom-value">{{ value }}%</span>
-          </template>
-        </v-slider>
+        />
       </div>
     </Transition>
   </Teleport>
@@ -43,16 +49,18 @@ export default {
       type: Number,
       default: 100,
     },
-    min: {
-      type: Number,
-      default: 50,
-    },
-    max: {
-      type: Number,
-      default: 100,
-    },
   },
   emits: ['update:value'],
+  computed: {
+    sliderValue: {
+      get() {
+        return this.value
+      },
+      set(next) {
+        this.$emit('update:value', next)
+      },
+    },
+  },
 }
 </script>
 
@@ -60,8 +68,8 @@ export default {
 /* 缩放条。整块钉在视口右下角，teleport 到 body（见模板里那段注释）——
    它管的是视口，不是卡片，卡片缩了它不能跟着缩。
    z-index 压在对话框浮层之上：对话框打开时它得能看见、能拖。
-   刻意不给底色：整页本来就暗，一条没有底的细滑块贴着右下角就够了，
-   加个底反而像多出来一块东西。淡入淡出走通用那套 .fade-*（见 transitions.scss） */
+   不加底色，一条细滑块贴着右下角就够了。
+   淡入淡出走通用那套 .fade-*（见 transitions.scss） */
 .editor-zoom {
   position: fixed;
   /* 右边距连滚动条那条槽一起让开：html 上 scrollbar-gutter: stable 给滚动条
@@ -70,30 +78,30 @@ export default {
   right: calc(16px + (100vw - 100%));
   bottom: 16px;
   z-index: 2600;
-  width: 132px;
-  /* 左右各留出半个拇指的位置：Vuetify 把拇指中心压在轨道两端，拇指会往外探出
-     半个（约 10px）。不留的话滑到 100% 时拇指尖探到条外，正好被右下角那条
-     滚动条压住。宽度走 border-box，留白从内容里让，条本身还是 132 */
-  padding-inline: 10px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  /* 定宽：百分比位数变化时滑轨不跟着伸缩 */
+  width: 180px;
+  box-sizing: border-box;
 }
 
-.editor-zoom-slider {
-  width: 100%;
-}
-
-/* 去掉 Vuetify 横向 slider 自带的 margin-inline:8px：它会把滑轨往右顶出 8px，
-   拇指跟着再往右探 8px，上面那圈留白就白留了。选择器带上 .v-slider 提一档权重，
-   跟 Vuetify 组件样式谁先加载无关 */
-.editor-zoom-slider.v-slider {
-  margin-inline: 0;
-}
-
-/* 百分比摆在滑块上，不是旁边另写一行。
-   摆旁边的话数字一变宽（60% → 100%）滑轨就被挤短一截，
-   滑到头的时候拇指会跟着跳一下，所以宽度给它定死 */
+/* 定宽 + 等宽数字，70% 和 100% 切换时右侧滑轨纹丝不动 */
 .editor-zoom-value {
-  font-size: 11px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   opacity: 0.7;
+  white-space: nowrap;
 }
+
+/* 露头时机和过渡长度都跟「点击任意位置完成编辑」那句用同一组变量：
+   一起等面板停稳，再一起慢慢淡进来；关的时候也一起淡出去 */
+.editor-zoom.fade-enter-active {
+  transition: opacity var(--motion-slogan-in) var(--ease-standard) var(--motion-slogan-delay);
+}
+
+.editor-zoom.fade-leave-active {
+  transition: opacity var(--motion-slogan-out) var(--ease-accelerate);
+}
+
 </style>

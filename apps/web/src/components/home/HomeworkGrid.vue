@@ -21,7 +21,7 @@
           v-for="item in sortedItems"
           :key="item.key"
           class="grid-item"
-          :class="{ 'grid-item-unplaced': !isPlaced(item) }"
+          :class="{ 'grid-item-unplaced': !isPlaced(item), 'grid-item-snap-w': snapWidth(item) }"
           :data-key="item.key"
           :style="itemStyle(item)"
         >
@@ -127,8 +127,11 @@ import { isBodyLine, isHeadingLine } from '@/utils/homeworkText'
 import { captureElement } from '@/utils/screenshot'
 import {
   buildMasonryLayout,
+  buildRowLayout,
+  columnWidth,
   columnsForWidth,
   fillSpanHoles,
+  measureCards,
   measureCardsAsync,
   COLUMN_GAP,
   ROW_GAP,
@@ -206,6 +209,8 @@ export default {
     this._resizeRaf = 0
     // 上一次完整求解用的容器宽度。新结果宽度不同，说明是视口变化引起的
     this._solvedW = 0
+    // 上一次求解时的视口列数：跨断点时不走等比压缩的实时预览
+    this._solvedViewportColumns = 0
     // 列结构动画的截止时间：这之前新的拖拽事件不要再关横向过渡
     this._structuralUntil = 0
   },
@@ -268,6 +273,7 @@ export default {
       // 编辑面板开着也照常算，输入不被阻塞，也不需要等到编辑结束。
       this.applyQuickResize()
       this.applyFastPreview()
+      this.applyRowWidthPreview()
       this.cacheCurrentLayout()
     }
     this.scheduleLayout(this.paused ? 0 : 140)
@@ -449,6 +455,11 @@ export default {
     // 卡片在网格里的显式位置：列、跨几列、从第几行开始、跨几行。
     // 行高 1px、row-gap 0，所以行号就是像素；卡片之间的 11px 由求解器的 y 留出。
     // 起止都往上取整，保证前一张的底不会压到后一张的头。
+    // 这一版求解认定的宽度变化是否小到该直接跟手（连续输入/删除）
+    snapWidth(item) {
+      return !!this._layout?.placements?.get(item.key)?.snapWidth
+    },
+
     itemStyle(item) {
       void this.layoutVersion
       const layout = this._layout
@@ -469,6 +480,9 @@ export default {
         width: `${box.width}px`,
         height: `${end - start}px`,
         '--hw-stretch': `${stretch}px`,
+        // 文本按目标宽度排：宽度过渡期间卡片外框在动，正文不跟着重新折行。
+        // 拖窗时先沿用上一版求解的宽度，别被实时拉伸的中间列宽带着闪一次
+        '--hw-target-w': `${placement.textWidth ?? box.width}px`,
       }
       // 首次落位的这一帧直接落在最终位置，不要从左上角滑过来；
       // 下一帧起恢复正常过渡
@@ -585,20 +599,42 @@ export default {
       const layout = this._layout
       const container = this.$refs.gridContainer
       if (!layout || !container || !layout.columns || !layout.columns.length) return false
+      // 跨断点时别按旧列数把列宽等比压扁：卡片会先被挤窄、正文跟着被裁
+      // 或重排一次，再动画到新列数。直接保持旧宽度，等这次求解落地后一次性过渡
+      if (this._solvedViewportColumns && columnsForWidth(window.innerWidth) !== this._solvedViewportColumns) {
+        return false
+      }
       const W = Math.round(container.clientWidth)
       if (!W || W === layout.W) return false
       const gap = layout.gap
-      const totalOld = layout.columns.reduce((sum, col) => sum + col.width, 0)
-      const totalNew = W - gap * (layout.columns.length - 1)
-      if (totalOld <= 0 || totalNew <= 0) return false
 
-      let x = 0
-      const columns = layout.columns.map((col) => {
-        const width = (col.width / totalOld) * totalNew
-        const next = { ...col, x, width }
-        x += width + gap
-        return next
-      })
+      let columns
+      if (layout.rowMode) {
+        // 少卡一行时每张卡宽度由内容/视口列宽取大，不能按「整行均分」拉伸：
+        // 单张卡会先被拉到整行宽再跳回来，看着就是全宽闪一下
+        const colW = columnWidth(W, columnsForWidth(window.innerWidth), gap)
+        const byCol = new Map()
+        layout.placements.forEach((placement) => byCol.set(placement.col, placement))
+        let x = 0
+        columns = layout.columns.map((col, i) => {
+          const natural = byCol.get(i)?.naturalWidth
+          const width = Math.max(natural != null ? natural : col.width, colW)
+          const next = { ...col, x, width }
+          x += width + gap
+          return next
+        })
+      } else {
+        const totalOld = layout.columns.reduce((sum, col) => sum + col.width, 0)
+        const totalNew = W - gap * (layout.columns.length - 1)
+        if (totalOld <= 0 || totalNew <= 0) return false
+        let x = 0
+        columns = layout.columns.map((col) => {
+          const width = (col.width / totalOld) * totalNew
+          const next = { ...col, x, width }
+          x += width + gap
+          return next
+        })
+      }
 
       this._layout = { ...layout, W, columns }
       this.layoutVersion++
@@ -755,6 +791,67 @@ export default {
       return true
     },
 
+    // 少卡一行时宽度由内容撑出来。逐字输入时先同步按新内容量一遍、把宽度
+    // 和高度一起补上：等异步求解的话，正文会先按上一版的窄宽度折一次行再展开，
+    // 看起来就是「闪一下」。只在内容变化（宽度没变）时走，拖窗口交给过渡动画。
+    applyRowWidthPreview() {
+      const layout = this._layout
+      const container = this.$refs.gridContainer
+      if (!layout?.rowMode || !container || !layout.placements?.size) return false
+      if (this.resizing) return false
+      const W = Math.round(container.clientWidth)
+      if (!W || W !== layout.W) return false
+      const items = this.sortedItems || []
+      if (!items.length || items.length !== layout.columns.length) return false
+      const gap = layout.gap
+      const viewportColumns = this._solvedViewportColumns || columnsForWidth(window.innerWidth)
+      const parent = container.parentElement || container
+      const cards = items.map((item) =>
+        container.querySelector(`.grid-item[data-key="${CSS.escape(item.key)}"] .hw-card`),
+      )
+      if (cards.some((card) => !card)) return false
+      const colW = columnWidth(W, viewportColumns, gap)
+      const measured = measureCards(cards, W, { columns: viewportColumns, gap, parent })
+      if (!measured || measured.some((m) => !m)) return false
+      const widths = measured.map((m) => Math.max(m.naturalWidth, colW))
+      const changed = items.some((item, i) => {
+        const placement = layout.placements.get(item.key)
+        return placement && Math.abs(this.placementBox(layout, placement).width - widths[i]) > 0.5
+      })
+      if (!changed) return false
+
+      // 高度得按每张卡自己的新宽度量，和等分列宽量出来的不一样
+      const sized = measureCards(cards, W, { columns: viewportColumns, gap, parent, widths })
+      if (!sized || sized.some((m) => !m)) return false
+      let x = 0
+      let max = 0
+      const columns = []
+      const placements = new Map()
+      items.forEach((item, i) => {
+        const width = widths[i]
+        const height = sized[i].heights[1]
+        columns.push({ width, x, height })
+        placements.set(item.key, {
+          index: i,
+          col: i,
+          span: 1,
+          y: 0,
+          height,
+          naturalHeight: height,
+          bottom: height,
+          // 内容驱动的宽度直接跟手，不走 280ms 过渡
+          textWidth: width,
+          naturalWidth: sized[i].naturalWidth,
+          snapWidth: true,
+        })
+        x += width + gap
+        max = Math.max(max, height)
+      })
+      this._layout = { ...layout, columns, placements, max }
+      this.layoutVersion++
+      return true
+    },
+
     // 只量改动过的卡片：克隆到隐藏容器里，按它现在占的列宽取自然高度。
     // 先全部挂上再统一读数，一次布局就能量完。
     measurePreviewHeights(changed, layout, container) {
@@ -816,36 +913,67 @@ export default {
 
       // 列数按视口宽度分档，列宽按容器实际可用宽度均分；
       // 卡片比列数还少时按卡片数收窄，免得量了用不上的宽度
-      const columns = Math.max(1, Math.min(columnsForWidth(window.innerWidth), items.length))
+      const viewportColumns = columnsForWidth(window.innerWidth)
+      const columns = Math.max(1, Math.min(viewportColumns, items.length))
       const gap = COLUMN_GAP
+      const parent = container.parentElement || container
+      // 宽度在量高期间又变了：立刻放弃，别拿旧宽度量完再丢
+      const shouldCancel = () =>
+        (token != null && token !== this._layoutToken) ||
+        W !== Math.round(container.clientWidth)
 
       const measurements = await measureCardsAsync(
         cardElements,
         W,
-        {
-          columns,
-          gap,
-          parent: container.parentElement || container,
-        },
-        {
-          // 宽度在量高期间又变了：立刻放弃，别拿旧宽度量完再丢
-          shouldCancel: () =>
-            (token != null && token !== this._layoutToken) ||
-            W !== Math.round(container.clientWidth),
-        },
+        { columns, gap, parent },
+        { shouldCancel },
       )
       if (!measurements || measurements.some((m) => !m)) return false
       // 测量期间又来了新输入/新尺寸：这份结果已经过期，直接丢掉
       if (token != null && token !== this._layoutToken) return false
 
-      const chosen = buildMasonryLayout({
-        heights: measurements.map((m) => m.heights),
-        naturalWidths: measurements.map((m) => m.naturalWidth),
-        W,
-        columns,
-        gap,
-        rowGap: ROW_GAP,
-      })
+      // 卡片不够一屏列数时不要再拉宽撑满：每张取 max(自然宽, 视口列宽)，
+      // 一行左对齐；放不下才退回等分列宽（即原来的分列求解）
+      let chosen = null
+      // 少卡时的一行布局：宽度由内容决定，快速缩放要按自然宽算，不能按比例拉满
+      let rowMode = false
+      if (items.length < viewportColumns) {
+        const widths = measurements.map((m) => Math.max(m.naturalWidth, columnWidth(W, viewportColumns, gap)))
+        const total = widths.reduce((sum, w) => sum + w, 0) + gap * (widths.length - 1)
+        if (total <= W + 0.5) {
+          // 高度要按各自的宽度量，和等分列宽量出来的不一样
+          const uniformWidth = columnWidth(W, columns, gap)
+          const needRemeasure = widths.some((w) => Math.abs(w - uniformWidth) > 0.5)
+          let rowMeasurements = measurements
+          if (needRemeasure) {
+            rowMeasurements = await measureCardsAsync(
+              cardElements,
+              W,
+              { columns, gap, widths, parent },
+              { shouldCancel },
+            )
+            if (!rowMeasurements || rowMeasurements.some((m) => !m)) return false
+            if (token != null && token !== this._layoutToken) return false
+          }
+          chosen = buildRowLayout({
+            widths,
+            heights: rowMeasurements.map((m) => m.heights[1]),
+            W,
+            gap,
+          })
+          rowMode = !!chosen
+        }
+      }
+      if (!chosen) {
+        chosen = buildMasonryLayout({
+          heights: measurements.map((m) => m.heights),
+          naturalWidths: measurements.map((m) => m.naturalWidth),
+          W,
+          columns,
+          gap,
+          rowGap: ROW_GAP,
+        })
+      }
       if (!chosen) return false
       // 测量/求解这段时间内容又变了：这份结果已经过期，别盖掉本地预览，
       // 交给 updated 里排的那次补算。
@@ -865,7 +993,25 @@ export default {
       chosen.placements.forEach((placement) => {
         const item = items[placement.index]
         if (!item) return
-        placements.set(item.key, placement)
+        // 记下这版求解认定的正文排版宽度：applyQuickResize 等比拉伸列宽时
+        // 只动外框，正文仍按这里的目标宽排，不会按中间宽度折一次行
+        let textWidth = chosen.columns[placement.col].width
+        for (let k = 1; k < placement.span; k++) {
+          textWidth += gap + chosen.columns[placement.col + k].width
+        }
+        // 连续敲字/删除时宽度目标几十毫秒就变一次，再走 280ms 过渡会一直落后。
+        // 这种小幅、内容驱动的宽度变化直接跟手；换列这类大变化仍走动画
+        const prev = this._layout?.placements?.get(item.key)
+        let snapWidth = false
+        if (this._solvedW === W && prev) {
+          const delta = Math.abs(textWidth - this.placementBox(this._layout, prev).width)
+          snapWidth = delta > 0.5 && delta <= 80
+        }
+        if (rowMode) {
+          // 拖动窗口时的实时缩放要知道这张卡是内容撑出来的还是列宽撑出来的
+          placement.naturalWidth = measurements[placement.index]?.naturalWidth
+        }
+        placements.set(item.key, { ...placement, textWidth, snapWidth })
         order.push(item.key)
       })
 
@@ -904,6 +1050,7 @@ export default {
         max: chosen.max,
         gap,
         W,
+        rowMode,
       }
       this._layoutSignature = signature
       this._layoutDayKey = this.dayKey
@@ -912,6 +1059,7 @@ export default {
       if (request === this._layoutRequest) this._layoutDirty = false
       this.layoutVersion++
       this._solvedW = W
+      this._solvedViewportColumns = viewportColumns
       // 结构变化时上面已经放开过渡；其余情况等这一帧画完再恢复。
       // 用 resizing 判断而不是 viewportDriven：首屏期间就拖窗口时
       // _solvedW 还是 0，但过渡同样必须恢复，不能一直卡在拖拽态
@@ -1071,6 +1219,21 @@ export default {
   transition:
     top var(--motion-slow) var(--ease-standard),
     height var(--motion-slow) var(--ease-standard);
+}
+
+/* 连续敲字/删除时宽度目标更新得比 280ms 过渡快得多，动画只会一直追不上；
+   这类小幅内容变化直接到位，结构与视口变化仍走完整过渡（见 itemStyle） */
+.grid-item.grid-item-snap-w {
+  transition:
+    left var(--motion-slow) var(--ease-standard),
+    top var(--motion-slow) var(--ease-standard),
+    height var(--motion-slow) var(--ease-standard);
+}
+
+/* 宽度过渡中正文仍按最终宽度排版，不随中间宽度来回折行 */
+.hw-card-title,
+.hw-card-text {
+  width: var(--hw-target-w, 100%);
 }
 
 /* 科目名、小标题、正文三处之间的间距统一取这一个值 */

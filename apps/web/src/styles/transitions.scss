@@ -18,6 +18,11 @@
   --motion-dialog-content-in: 140ms;
   --motion-dialog-content-delay: 140ms;
   --motion-dialog-content-out: 100ms;
+  // 面板落定之后才露头的两样东西（提示语、缩放条）：等面板停稳，再用同一段
+  // 慢悠悠的淡入出现，带一段延迟，否则跟展开动画尾巴挤在一起
+  --motion-slogan-in: 760ms;
+  --motion-slogan-delay: 340ms;
+  --motion-slogan-out: 160ms;
 }
 
 // ===== 作业卡片（首页瀑布流）=====
@@ -57,7 +62,9 @@
 // ===== 「添加作业」卡片 / 设置页科目卡 =====
 // 与作业卡片同一套口径：进入淡入、离开原地淡出、换位时平滑让开。
 .v-list-enter-active.v-card {
-  transition: opacity var(--motion-base) var(--ease-standard);
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-decelerate);
 }
 
 .v-list-leave-active.v-card {
@@ -71,7 +78,12 @@
   opacity: 0;
 }
 
-.v-list-move {
+.v-list-enter-from.v-card {
+  transform: translateY(6px);
+}
+
+// 双类提权：Vuetify 的 .v-card 后注入，会盖掉单类的 transform 过渡
+.v-list-move.v-card {
   transition: transform var(--motion-slow) var(--ease-standard);
 }
 
