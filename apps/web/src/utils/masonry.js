@@ -310,6 +310,30 @@ function finalize(state, ctx) {
   }
 }
 
+// 同样总高时优先科目顺序：
+//   1. 相邻科目尽量留在同一列（相邻两科上下排，而不是散到各列）；
+//   2. 再按“从上到下、从左往右”的阅读顺序，逆序对越少越好。
+// 跨列卡只按起始列算，它本来就会盖住下一列
+function orderRank(layout) {
+  const n = layout.placements.length
+  const colOf = new Array(n)
+  for (const p of layout.placements) colOf[p.index] = p.col
+  let sameColumn = 0
+  for (let i = 0; i + 1 < n; i++) {
+    if (colOf[i] === colOf[i + 1]) sameColumn++
+  }
+  const sorted = layout.placements.slice().sort(function (a, b) {
+    return a.y - b.y || a.col - b.col
+  })
+  let inversions = 0
+  for (let i = 0; i < sorted.length; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      if (sorted[i].index > sorted[j].index) inversions++
+    }
+  }
+  return [-sameColumn, inversions]
+}
+
 // 兜底候选：LPT 贪心——高的卡先放，每次都塞进当前最矮的列。
 // 不跨列时分列就是装箱问题，LPT 往往已经是最优或只差一点；beam 只看眼前
 // 最高列，偶尔会漏掉这种「中途先吃点亏、后面更平」的排法，拿它兜底最省事。
@@ -421,8 +445,11 @@ export function buildMasonryLayout(options) {
   // 验收：先看「总高 - 跨列资格分 × 权重」，同分再比列高差。
   // 资格分高的卡（英语）值得为它多付半张卡的高度，刚好填满两列的卡（语文）不值
   function rank(layout) {
+    const [sameColumn, inversions] = orderRank(layout)
     return [
       Math.round(layout.max - SPAN_GAIN_WEIGHT * layout.gain),
+      sameColumn,
+      inversions,
       layout.range > MAX_SPAN_HOLE ? 1 : 0,
       layout.range,
     ]

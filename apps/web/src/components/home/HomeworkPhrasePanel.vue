@@ -24,22 +24,6 @@
             {{ chipLabel(chip) }}
           </v-chip>
         </div>
-        <!-- 「正面/反面」后头那个换行（见 panelRows 里的 newline）。
-             词条是补字，这个是断句，用 flat + primary 跟它们分开；
-             ma-1 和 chip 的间距对齐，height 也照 chip 的 32px，
-             免得这一行比别行长出一截 -->
-        <v-btn
-          v-if="row.newline"
-          class="ma-1 phrase-newline"
-          color="primary"
-          rounded="pill"
-          size="small"
-          variant="flat"
-          @mousedown.prevent
-          @click="$emit('next-line')"
-        >
-          下一行
-        </v-btn>
       </div>
       <span v-show="row.suffix" class="phrase-affix phrase-affix-suffix">{{ row.suffix }}</span>
     </div>

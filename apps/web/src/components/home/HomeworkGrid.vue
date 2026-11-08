@@ -206,6 +206,8 @@ export default {
     this._resizeRaf = 0
     // 上一次完整求解用的容器宽度。新结果宽度不同，说明是视口变化引起的
     this._solvedW = 0
+    // 列结构动画的截止时间：这之前新的拖拽事件不要再关横向过渡
+    this._structuralUntil = 0
   },
   computed: {
     // 列宽和每张卡的位置写进内联样式：卡片全部绝对定位，
@@ -323,8 +325,15 @@ export default {
         this.handleViewportChange()
         return
       }
+      // 上一次求解排的“恢复过渡”还没执行就先取消，免得拖到一半被它放开
+      if (this._resizeRaf) {
+        cancelAnimationFrame(this._resizeRaf)
+        this._resizeRaf = 0
+      }
       this.layoutWidth = window.innerWidth
-      this.resizing = true
+      // 正在做列结构动画时不要重新关掉横向/宽度过渡，否则动画刚起步
+      // 就被下一次预览取消，卡片会直接跳到目标列再动
+      this.resizing = performance.now() >= this._structuralUntil
       this.applyQuickResize()
       this.applyFastPreview(true)
       this.scheduleLayout(0)
@@ -553,6 +562,19 @@ export default {
         .join('\u0002')
       const style = this.contentStyle ? JSON.stringify(this.contentStyle) : ''
       return `${W}|${style}|${content}`
+    },
+
+    // 这次求解有没有改动列结构：列数变了，或某张卡换了列、跨列数变了。
+    // 只变 y/高度不算——那种情况横向没动，纵向过渡是正常的重排。
+    layoutStructureChanged(placements, columns) {
+      const layout = this._layout
+      if (!layout || !layout.columns || !placements) return false
+      if (!columns || columns.length !== layout.columns.length) return true
+      for (const [key, next] of placements) {
+        const prev = layout.placements.get(key)
+        if (!prev || prev.col !== next.col || prev.span !== next.span) return true
+      }
+      return false
     },
 
     // 宽度变了先做便宜的实时预览：列数不动，列宽按旧宽度占比等比拉伸。
@@ -847,9 +869,32 @@ export default {
         order.push(item.key)
       })
 
-      // 视口宽度变了才落到这儿：这版结果直接摆到位，别让宽度再补一段动画
+      // 视口宽度变了才落到这儿。若这版结果没动列结构（列数、每张卡的列和
+      // 跨列数都没变），宽度已经在实时预览里到位，继续直接摆放；
+      // 若列结构变了，整块要重新落位：放开四属性过渡，否则卡片只横向瞬移、
+      // 纵向单独滑，看起来就像“在列内无缘无故地上下动”。
       const viewportDriven = this._solvedW !== 0 && this._solvedW !== W
-      if (viewportDriven) this.resizing = true
+      const structureChanged = viewportDriven && this.layoutStructureChanged(placements, chosen.columns)
+      if (viewportDriven) {
+        // 结构动画的窗口期内，后续非结构求解也不恢复“拖拽态”，
+        // 否则正在跑的宽度过渡会被取消、收尾时跳一下
+        const animating = performance.now() < this._structuralUntil
+        this.resizing = !structureChanged && !animating
+        if (structureChanged) this._structuralUntil = performance.now() + 320
+      }
+      if (structureChanged) {
+        // 先让「放开横向过渡」这一帧落地：等 Vue 把 class 渲染掉，再强制结算样式。
+        // 否则浏览器会把「移除 grid-resizing」和「改 left」当成同一次样式变化，
+        // left 从旧值直接跳过去，看着就像从目标列开始动
+        await this.$nextTick()
+        void container.offsetWidth
+        // 等这一下的工夫窗口可能又变了，按旧宽度算的结果不能用了
+        if (W !== Math.round(container.clientWidth)) {
+          this._layoutDirty = true
+          this._layoutRequest++
+          return false
+        }
+      }
 
       // 这份结果就是按当前宽度算的
       this._layout = {
@@ -867,7 +912,10 @@ export default {
       if (request === this._layoutRequest) this._layoutDirty = false
       this.layoutVersion++
       this._solvedW = W
-      if (viewportDriven) this.releaseResizing()
+      // 结构变化时上面已经放开过渡；其余情况等这一帧画完再恢复。
+      // 用 resizing 判断而不是 viewportDriven：首屏期间就拖窗口时
+      // _solvedW 还是 0，但过渡同样必须恢复，不能一直卡在拖拽态
+      if (this.resizing && !structureChanged) this.releaseResizing()
       return true
     },
 

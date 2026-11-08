@@ -1694,7 +1694,7 @@ export default {
    不加底衬/胶囊：小字号、松字距、两级文字色，靠排版本身把主次分开 */
 .dialog-slogan {
   position: absolute;
-  top: calc(100% + 14px);
+  top: calc(100% - 6.5px);
   left: 50%;
   transform: translateX(-50%);
 
