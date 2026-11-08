@@ -395,7 +395,17 @@ function toggleLineAt(view, index) {
     const sel = state.selection.main
     const onCursor = sel.empty && sel.head >= line.from && sel.head <= line.to
     if (onCursor) {
-      toggleRefuse(view, line.from)
+      // 回车续号会在正文里留下一个光杆「2.」：它只是藏起来了，光记「不要编号」
+      // 挡不住它，一敲字就变成真编号。取消编号时把这一截从正文里摘掉
+      const num = numberLen(line.text)
+      if (num > 0) {
+        view.dispatch({
+          changes: { from: line.from, to: line.from + num },
+          effects: setRefuse.of({ pos: line.from, on: true }),
+        })
+      } else {
+        toggleRefuse(view, line.from)
+      }
       return
     }
     // 光标搬过去（虚拟序号只画在光标那一行），顺手撤掉「不要编号」
@@ -461,7 +471,16 @@ function enterAt(view) {
     })
     return true
   }
-  const tail = line.text.slice(sel.head - line.from)
+  // 行末回车：新的空行不往正文里写号，编号栏上的虚拟序号照旧会显示
+  // 「写上字就是第几号」。写真号的话它只是个光杆「2.」，用户取消编号时
+  // 还得从正文里摘掉，组字期间也会先闪一下这个号
+  if (sel.head === line.to) {
+    view.dispatch({
+      changes: { from: sel.head, insert: '\n' },
+      selection: EditorSelection.cursor(sel.head + 1),
+    })
+    return true
+  }
   const map = docMap(view.state)
   const num = nextNumber(map.texts, map.numbers, line.number - 1)
   const prefix = `${num}. `
@@ -557,6 +576,10 @@ function clipboardFromSelection(event, view, cutting) {
 const host = ref(null)
 let view = null
 let lastEmitted = ''
+// 组字开始前的正文。组字期间不重排（重排会在输入法还没提交时改正文，
+// 拼音的第二次更新就会把第一次的字母再插一遍）；等 compositionend 后拿这份
+// 旧文算「这一行原来是不是空的」，再补一次收尾
+let composingDoc = null
 const fromOutside = Annotation.define()
 
 function selectionPayload() {
@@ -666,12 +689,24 @@ const clampSelectionToBody = EditorState.transactionFilter.of((tr) => {
   }
 })
 
+// 组字结束后补一次收尾。组字期间输入法把一次输入拆成好几笔事务，
+// 期间改正文（补号、补编号后的空格）会让它下一笔按旧位置重放，拼音就会重复；
+// 所以组字期间只记下旧文，等提交完再整篇收尾一次
+function flushCompositionSettle() {
+  if (!view || composingDoc === null || view.composing) return
+  const oldDoc = composingDoc
+  composingDoc = null
+  const line = view.state.doc.lineAt(view.state.selection.main.head)
+  const oldLine = oldDoc.split('\n')[line.number - 1] ?? ''
+  applySettled(oldDoc, view.state.doc.toString(), bodyOf(oldLine).trim() === '')
+}
+
 function handleUpdate(update) {
-  // 每一笔改动都收尾。组字中的拼音也走这一条：输入法只是把一次输入拆成了
-  // 好几笔事务，没有哪一笔特殊。以前这里为组字单开过旁路（组字期间不收尾、
-  // 不搬字、虚拟序号另算一条），拼音期间光标因此会落到隐藏记号前面、序号会抖，
-  // 一律撤掉——拼音和普通字走完全同一条路
-  if (update.docChanged && !update.transactions.some((tr) => tr.annotation(fromOutside))) {
+  if (update.view.composing) {
+    if (composingDoc === null) composingDoc = update.startState.doc.toString()
+  } else if (composingDoc !== null) {
+    flushCompositionSettle()
+  } else if (update.docChanged && !update.transactions.some((tr) => tr.annotation(fromOutside))) {
     settleInView(update)
   }
   const value = view.state.doc.toString()
@@ -689,6 +724,8 @@ const remapBeforeMarker = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged) return tr
   if (tr.annotation(fromOutside)) return tr
   if (!tr.isUserEvent('input')) return tr
+  // 组字事务一个字都别改：在这里插空格/补号，输入法的下一笔会按旧位置重放
+  if (tr.isUserEvent('input.type.compose')) return tr
   let count = 0
   let fix = null
   tr.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
@@ -913,8 +950,11 @@ onMounted(() => {
         history(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         Prec.high(EditorView.domEventHandlers({
-          // 组字一律不管：拼音不插事件、不参与 keydown，笔笔都当普通输入收尾
+          // 组字一律不管：拼音不插事件、不参与 keydown；提交完再补一次收尾
           keydown: handleKeydown,
+          compositionend: () => {
+            setTimeout(flushCompositionSettle, 0)
+          },
           paste: pasteFromClipboardEvent,
           copy: (event, view) => clipboardFromSelection(event, view, false),
           cut: (event, view) => clipboardFromSelection(event, view, true),

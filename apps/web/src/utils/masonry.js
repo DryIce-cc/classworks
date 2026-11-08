@@ -58,6 +58,33 @@ export function spanWidth(span, W, C, gap = COLUMN_GAP) {
   return span * columnWidth(W, C, gap) + (span - 1) * gap
 }
 
+// 卡片比视口列数少、排成一行时每张卡占几列：自然宽向上取整到整列，
+// 从左到右分配，每张都先给后面的卡留 1 列（卡数一定小于列数，所以留得下）。
+// 这样窄卡就只占 1 列、宽卡按需多跨几列，不再把整行均分成 n 份
+export function rowSpans(naturalWidths, W, C, gap = COLUMN_GAP) {
+  const n = naturalWidths.length
+  const spans = new Array(n)
+  const colW = columnWidth(W, C, gap)
+  let remaining = C
+  for (let i = 0; i < n; i++) {
+    const reserve = n - 1 - i
+    const maxSpan = Math.max(1, Math.min(C, remaining - reserve))
+    const need = Math.max(naturalWidths[i] || 0, colW)
+    let span = 1
+    while (span < maxSpan && spanWidth(span, W, C, gap) < need) span++
+    spans[i] = span
+    remaining -= span
+  }
+  return spans
+}
+
+// 上面那份列数换成实际宽度，交给 buildRowLayout
+export function rowWidths(naturalWidths, W, C, gap = COLUMN_GAP) {
+  return rowSpans(naturalWidths, W, C, gap).map(function (span) {
+    return spanWidth(span, W, C, gap)
+  })
+}
+
 // 让出一轮事件循环即可：用 setTimeout(0) 而不是 requestIdleCallback，
 // 后者在输入繁忙时可能被拖到 timeout，反而让实时预览迟迟不更新。
 function yieldToIdle() {

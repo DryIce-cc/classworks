@@ -131,6 +131,7 @@ import {
   columnWidth,
   columnsForWidth,
   fillSpanHoles,
+  rowWidths,
   measureCards,
   measureCardsAsync,
   COLUMN_GAP,
@@ -610,17 +611,20 @@ export default {
 
       let columns
       if (layout.rowMode) {
-        // 少卡一行时每张卡宽度由内容/视口列宽取大，不能按「整行均分」拉伸：
-        // 单张卡会先被拉到整行宽再跳回来，看着就是全宽闪一下
-        const colW = columnWidth(W, columnsForWidth(window.innerWidth), gap)
+        // 少卡一行时宽度由内容决定：自然宽对准视口列宽（窄卡 1 列、宽卡跨列），
+        // 不能按「整行均分」拉伸，否则单张卡会先被拉到整行宽再跳回来
+        const C = columnsForWidth(window.innerWidth)
         const byCol = new Map()
         layout.placements.forEach((placement) => byCol.set(placement.col, placement))
+        const naturals = layout.columns.map((col, i) => {
+          const natural = byCol.get(i)?.naturalWidth
+          return natural != null ? natural : col.width
+        })
+        const widths = rowWidths(naturals, W, C, gap)
         let x = 0
         columns = layout.columns.map((col, i) => {
-          const natural = byCol.get(i)?.naturalWidth
-          const width = Math.max(natural != null ? natural : col.width, colW)
-          const next = { ...col, x, width }
-          x += width + gap
+          const next = { ...col, x, width: widths[i] }
+          x += widths[i] + gap
           return next
         })
       } else {
@@ -810,10 +814,14 @@ export default {
         container.querySelector(`.grid-item[data-key="${CSS.escape(item.key)}"] .hw-card`),
       )
       if (cards.some((card) => !card)) return false
-      const colW = columnWidth(W, viewportColumns, gap)
       const measured = measureCards(cards, W, { columns: viewportColumns, gap, parent })
       if (!measured || measured.some((m) => !m)) return false
-      const widths = measured.map((m) => Math.max(m.naturalWidth, colW))
+      const widths = rowWidths(
+        measured.map((m) => m.naturalWidth),
+        W,
+        viewportColumns,
+        gap,
+      )
       const changed = items.some((item, i) => {
         const placement = layout.placements.get(item.key)
         return placement && Math.abs(this.placementBox(layout, placement).width - widths[i]) > 0.5
@@ -938,31 +946,35 @@ export default {
       // 少卡时的一行布局：宽度由内容决定，快速缩放要按自然宽算，不能按比例拉满
       let rowMode = false
       if (items.length < viewportColumns) {
-        const widths = measurements.map((m) => Math.max(m.naturalWidth, columnWidth(W, viewportColumns, gap)))
-        const total = widths.reduce((sum, w) => sum + w, 0) + gap * (widths.length - 1)
-        if (total <= W + 0.5) {
-          // 高度要按各自的宽度量，和等分列宽量出来的不一样
-          const uniformWidth = columnWidth(W, columns, gap)
-          const needRemeasure = widths.some((w) => Math.abs(w - uniformWidth) > 0.5)
-          let rowMeasurements = measurements
-          if (needRemeasure) {
-            rowMeasurements = await measureCardsAsync(
-              cardElements,
-              W,
-              { columns, gap, widths, parent },
-              { shouldCancel },
-            )
-            if (!rowMeasurements || rowMeasurements.some((m) => !m)) return false
-            if (token != null && token !== this._layoutToken) return false
-          }
-          chosen = buildRowLayout({
-            widths,
-            heights: rowMeasurements.map((m) => m.heights[1]),
+        // 窄卡占 1 列、宽卡按自然宽多跨几列，一行左对齐；
+        // 不再把整行均分成 n 份（那样两张卡会各占一半，宽卡照样折行）
+        const widths = rowWidths(
+          measurements.map((m) => m.naturalWidth),
+          W,
+          viewportColumns,
+          gap,
+        )
+        // 高度要按各自的宽度量，和等分列宽量出来的不一样
+        const uniformWidth = columnWidth(W, columns, gap)
+        const needRemeasure = widths.some((w) => Math.abs(w - uniformWidth) > 0.5)
+        let rowMeasurements = measurements
+        if (needRemeasure) {
+          rowMeasurements = await measureCardsAsync(
+            cardElements,
             W,
-            gap,
-          })
-          rowMode = !!chosen
+            { columns, gap, widths, parent },
+            { shouldCancel },
+          )
+          if (!rowMeasurements || rowMeasurements.some((m) => !m)) return false
+          if (token != null && token !== this._layoutToken) return false
         }
+        chosen = buildRowLayout({
+          widths,
+          heights: rowMeasurements.map((m) => m.heights[1]),
+          W,
+          gap,
+        })
+        rowMode = !!chosen
       }
       if (!chosen) {
         chosen = buildMasonryLayout({

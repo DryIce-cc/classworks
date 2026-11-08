@@ -306,6 +306,16 @@ function dropHeadingLine(content, ownerStart) {
   return { text: tidyBlankLines(head + gap + rest), caretAt: (head + gap).length }
 }
 
+// 读 CSS 变量里的时间值。注意压缩后的 CSS 会把 280ms 写成 .28s，
+// parseFloat 只拿到 0.28，交给 WAAPI 就是 0.28ms——线上看起来整段动画都不动了
+function cssTimeToMs(value, fallback) {
+  const match = /^(\d*\.?\d+)(ms|s)$/.exec(String(value || '').trim())
+  if (!match) return fallback
+  const n = parseFloat(match[1])
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  return match[2] === 's' ? n * 1000 : n
+}
+
 export default {
   name: 'HomeworkEditDialog',
   components: { HomeworkEditor, HomeworkKeypad, HomeworkPhrasePanel, EditorZoomBar },
@@ -737,7 +747,7 @@ export default {
       }
       content.classList.add('hw-dialog-morphing')
       const root = getComputedStyle(document.documentElement)
-      const duration = parseFloat(root.getPropertyValue('--motion-dialog-open')) || 520
+      const duration = cssTimeToMs(root.getPropertyValue('--motion-dialog-open'), 520)
       const easing =
         root.getPropertyValue('--ease-dialog-open').trim() ||
         'cubic-bezier(0.4, 0, 0.2, 1)'
@@ -1074,7 +1084,7 @@ export default {
       this.sloganVisible = false
       content.classList.add('hw-dialog-closing')
       const root = getComputedStyle(document.documentElement)
-      const duration = parseFloat(root.getPropertyValue('--motion-dialog-close')) || 360
+      const duration = cssTimeToMs(root.getPropertyValue('--motion-dialog-close'), 360)
       const easing =
         root.getPropertyValue('--ease-dialog-close').trim() || 'cubic-bezier(0.4, 0, 1, 1)'
       // 临时取消渐隐：只留几何，恢复时把 opacity 两帧加回来
